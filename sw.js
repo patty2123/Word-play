@@ -16,7 +16,7 @@
    landed, so every open tab/app instance gets a postMessage about it —
    index.html turns that into the "Update available" banner. */
 
-var ASSET_VERSION = "15";
+var ASSET_VERSION = "16";
 var CACHE = "wordhunt-v" + ASSET_VERSION;
 
 var ASSETS = [

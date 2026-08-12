@@ -261,6 +261,7 @@
   var potentialEl = $("board-potential");
   var achOverlay = $("ach-overlay"), achList = $("ach-list");
   var achOpen = $("ach-open"), achBtnReady = $("ach-btn-ready"), achCloseX = $("ach-close-x");
+  var achToast = $("ach-toast"), achToastLabel = $("ach-toast-label");
   var missedChips = $("missed-chips"), showAllBtn = $("show-all-btn"), againBtn = $("again-btn");
 
   var tiles = [];
@@ -946,7 +947,11 @@
     missedCommon.sort(order);
     missedAll.sort(order);
 
+    var achBefore = achDoneMap(stats);
     recordRound();
+    var achAfter = achDoneMap(stats);
+    var newlyEarned = ACHIEVEMENTS.filter(function(a){ return achAfter[a.id] && !achBefore[a.id]; });
+    if(newlyEarned.length) queueAchievementToasts(newlyEarned);
 
     var potential = 0;
     game.sol.forEach(function(v, w){ potential += scoreOf(w); });
@@ -1163,7 +1168,9 @@
     6: [45000, 50000, 55000]
   };
 
-  var NUM_WORD = { 6:"Six", 7:"Seven", 8:"Eight", 9:"Nine", 10:"Ten", 11:"Eleven" };
+  // "an" before a vowel SOUND, not just a vowel letter — 8 (eight) and 11
+  // (eleven) both start with a vowel sound, 6/7/9/10 don't.
+  var ARTICLE = { 6:"a", 7:"a", 8:"an", 9:"a", 10:"a", 11:"an" };
 
   function distinctCount(s, len){
     var bucket = s.longWords[String(len)];
@@ -1176,24 +1183,28 @@
     // One achievement per exact length, 6 through 11 — not a 6-11 range lump.
     [6, 7, 8, 9, 10, 11].forEach(function(len){
       list.push({
+        id: "len" + len,
         cat: "Long Words",
-        label: "Find a " + NUM_WORD[len] + "-letter word",
+        label: "Find " + ARTICLE[len] + " " + len + "-letter word",
         check: function(s){ return distinctCount(s, len) >= 1; }
       });
     });
 
     // "Find 5" and "find 10", each split per length 8-11 rather than lumped.
+    // wordLen flags these for the expandable "which words" list in the panel.
     [8, 9, 10, 11].forEach(function(len){
       list.push({
+        id: "five" + len, wordLen: len,
         cat: "Long Words",
-        label: "Find 5 distinct " + NUM_WORD[len].toLowerCase() + "-letter words",
+        label: "Find 5 " + len + "-letter words",
         check: function(s){ return distinctCount(s, len) >= 5; }
       });
     });
     [8, 9, 10, 11].forEach(function(len){
       list.push({
+        id: "ten" + len, wordLen: len,
         cat: "Long Words",
-        label: "Find 10 distinct " + NUM_WORD[len].toLowerCase() + "-letter words",
+        label: "Find 10 " + len + "-letter words",
         check: function(s){ return distinctCount(s, len) >= 10; }
       });
     });
@@ -1203,12 +1214,14 @@
     // exception in this whole list that also counts infinite-mode rounds.
     [[25,"p25"], [50,"p50"], [75,"p75"]].forEach(function(pair){
       list.push({
+        id: pair[1],
         cat: "Board Mastery",
         label: "Score " + pair[0] + "% of a board's total possible points",
         check: function(s){ return !!s.pctBadges[pair[1]]; }
       });
     });
     list.push({
+      id: "full",
       cat: "Board Mastery",
       label: "Find every single word on a board (100%)",
       check: function(s){ return !!s.fullBoard; }
@@ -1217,6 +1230,7 @@
     [3, 4, 5, 6].forEach(function(size){
       HS_TIERS[size].forEach(function(threshold){
         list.push({
+          id: "hs" + size + "_" + threshold,
           cat: "High Scores (timed only)",
           label: size + "\u00d7" + size + " \u2014 " + threshold.toLocaleString() + " pts",
           check: function(s){ return (s.bestTimedScore[String(size)] || 0) >= threshold; }
@@ -1226,6 +1240,12 @@
 
     return list;
   })();
+
+  function achDoneMap(s){
+    var m = {};
+    ACHIEVEMENTS.forEach(function(a){ if(a.check(s)) m[a.id] = true; });
+    return m;
+  }
 
   function renderAchievements(){
     var byCat = {}, order = [];
@@ -1242,18 +1262,89 @@
         doneCount + '/' + items.length + '</span></h3>';
       items.forEach(function(a){
         var done = a.check(stats);
+        html += '<div class="ach-block">';
         html += '<div class="ach-row' + (done ? ' done' : '') + '">' +
-          '<span class="ach-trophy">' + (done ? "\ud83c\udfc6" : "\ud83c\udfc6") + '</span>' +
+          '<span class="ach-trophy">\ud83c\udfc6</span>' +
           '<span class="ach-label">' + a.label + '</span>' +
           (done ? '<span class="ach-check">\u2713</span>' : '') +
           '</div>';
+
+        // "Which words" expander — only on the 5/10-word tiers, and only once
+        // there's at least one word to show, same rule the longest-word tie
+        // list in Stats uses.
+        if(a.wordLen){
+          var bucket = stats.longWords[String(a.wordLen)] || {};
+          var found = Object.keys(bucket).sort();
+          if(found.length){
+            var expId = "ach-exp-" + a.id, listId = "ach-words-" + a.id;
+            html += '<button type="button" class="stat-expand ach-expand" id="' + expId +
+              '" data-target="' + listId + '" data-count="' + found.length + '">+' +
+              found.length + ' found</button>';
+            html += '<div class="stat-more ach-words" id="' + listId + '" hidden>' +
+              found.map(function(w){ return '<span class="chip">' + w.toUpperCase() + '</span>'; }).join("") +
+              '</div>';
+          }
+        }
+        html += '</div>';
       });
     });
     achList.innerHTML = html;
+
+    achList.querySelectorAll(".ach-expand").forEach(function(btn){
+      btn.addEventListener("click", function(e){
+        e.stopPropagation();
+        var target = document.getElementById(btn.dataset.target);
+        if(!target) return;
+        target.hidden = !target.hidden;
+        btn.textContent = (target.hidden ? "+" : "\u2212") + btn.dataset.count + " found";
+      });
+    });
+  }
+
+  /* A bright ascending triad, deliberately unlike every other sound in the
+     game — the word ding rises within one octave and stays soft, this one is
+     meant to actually be noticed. Toasts queue rather than overlap, so
+     multiple achievements earned in the same round announce one at a time. */
+  function achievementChime(){
+    if(!soundOn || !audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    tone(659, 0,    0.16, 0.20, "triangle");
+    tone(831, 0.09, 0.16, 0.20, "triangle");
+    tone(988, 0.18, 0.30, 0.22, "triangle");
+  }
+
+  var toastQueue = [], toastBusy = false;
+
+  function queueAchievementToasts(list){
+    list.forEach(function(a){ toastQueue.push(a); });
+    if(!toastBusy) showNextToast();
+  }
+
+  function showNextToast(){
+    if(!toastQueue.length){ toastBusy = false; return; }
+    toastBusy = true;
+    var a = toastQueue.shift();
+    achievementChime();
+    buzz();
+    achToastLabel.textContent = a.label;
+    achToast.classList.add("show");
+    setTimeout(function(){
+      achToast.classList.remove("show");
+      setTimeout(showNextToast, 400);
+    }, 2600);
   }
 
   function openAch(){ renderAchievements(); achOverlay.hidden = false; syncScrollLock(); }
+
+  // Closing just un-hides achOverlay — whatever was already open behind it
+  // (the ready screen or the post-game results) was never touched, so it's
+  // simply what's left visible. Tapping the dark backdrop closes it the same
+  // way the X does, not only via the button.
   function closeAch(){ achOverlay.hidden = true; syncScrollLock(); }
+
+  achOverlay.addEventListener("click", function(e){
+    if(e.target === achOverlay) closeAch();
+  });
 
   achOpen.addEventListener("click", openAch);
   achBtnReady.addEventListener("click", openAch);
