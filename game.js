@@ -6,6 +6,10 @@
   "use strict";
 
   var SIZE = 5, CELLS = 25;
+
+  // How long the word bubble lingers, and how long it takes to fade out.
+  // FADE_MS is mirrored into CSS as --flash-fade.
+  var FLASH_HOLD_MS = 420, FADE_MS = 300;
   var SCORE_BY_LEN = { 3:100, 4:400, 5:800, 6:1400, 7:1800, 8:2200, 9:2600 };
   function scoreOf(w){ return w.length >= 10 ? 3000 : (SCORE_BY_LEN[w.length] || 0); }
 
@@ -218,6 +222,7 @@
   function buildTiles(){
     boardEl.innerHTML = "";
     boardEl.style.gridTemplateColumns = "repeat(" + SIZE + ", 1fr)";
+    boardEl.style.gap = GAP + "%";
     boardEl.classList.remove("size-3", "size-4", "size-5", "size-6");
     boardEl.classList.add("size-" + SIZE);
     tiles = [];
@@ -239,6 +244,7 @@
     GATE = GATES[n];
     NEIGHBORS = buildNeighbors(n);
     computeGeometry();
+    rebuildCellList();
     buildTiles();
   }
 
@@ -263,11 +269,13 @@
       var s = raw ? JSON.parse(raw) : null;
       if(!s || typeof s !== "object") throw 0;
       s.best = s.best || {};
-      s.bestWord = s.bestWord || { word: "", pts: 0 };
+      // longest.words holds every word tied at the record length, oldest first,
+      // so the newest is simply the last one.
+      s.longest = s.longest || { len: 0, words: [] };
       s.games = s.games || 0;
       return s;
     } catch(err){
-      return { best: {}, bestWord: { word: "", pts: 0 }, games: 0 };
+      return { best: {}, longest: { len: 0, words: [] }, games: 0 };
     }
   }
 
@@ -279,12 +287,12 @@
     stats.games++;
     var key = String(SIZE);
     if(game.score > (stats.best[key] || 0)) stats.best[key] = game.score;
-    // "Best word" ranks by length first — score is derived from length anyway,
-    // so this keeps ties resolving to the word you'd actually brag about.
+
     game.found.forEach(function(pts, w){
-      var cur = stats.bestWord;
-      if(!cur.word || w.length > cur.word.length){
-        stats.bestWord = { word: w, pts: pts, size: SIZE };
+      if(w.length > stats.longest.len){
+        stats.longest = { len: w.length, words: [w] };      // new record, reset ties
+      } else if(w.length === stats.longest.len && stats.longest.words.indexOf(w) === -1){
+        stats.longest.words.push(w);
       }
     });
     saveStats(stats);
@@ -390,12 +398,19 @@
   /* Tile centres in the SVG's 100x100 space, derived from the CSS grid gap so
      the trail stays aligned at any board size without measuring the DOM:
      SIZE tiles plus SIZE-1 gaps fill the 100 units. */
-  var GAP = 3.2, STEP = 0, OFF = 0;
+  var GAPS = { 3: 3.2, 4: 3.2, 5: 3.2, 6: 2.0 };
+  var GAP = 3.2, STEP = 0, OFF = 0, HYSTERESIS = 0, SAMPLE_STEP = 0;
 
   function computeGeometry(){
+    GAP = GAPS[SIZE];
     var tile = (100 - GAP * (SIZE - 1)) / SIZE;
     OFF = tile / 2;
     STEP = tile + GAP;
+    // Stops the selection flickering while a finger sits on a tile boundary.
+    HYSTERESIS = STEP * 0.12;
+    // Fast flicks arrive as sparse pointermove events; the gap between them is
+    // resampled at this spacing so a quick diagonal can't skip a tile.
+    SAMPLE_STEP = STEP * 0.25;
   }
 
   function centerOf(i){
@@ -412,6 +427,8 @@
     var m = Math.floor(s / 60);
     return m > 0 ? m + ":" + String(s % 60).padStart(2, "0") : "0:" + String(s).padStart(2, "0");
   }
+
+  function isInfinite(){ return game.duration === 0; }
 
   function drawTiles(){
     for(var i = 0; i < CELLS; i++){
@@ -454,28 +471,53 @@
     renderTrail(game.path);
   }
 
-  /* Hit testing is geometric rather than elementFromPoint so the corners can be
-     clipped. With square hitboxes, the moment a finger clips the point where
-     four tiles meet, whichever tile owns that pixel registers — which is why a
-     diagonal swipe kept snapping to the orthogonal neighbour instead. Clipping
-     each tile to an octagon leaves a dead zone at the corners, so the finger has
-     to travel meaningfully toward a tile's centre before it counts. The tiles
-     still *look* square; only the sensitive area changed. */
-  var CORNER_CUT = 1.34;   // 2.0 would be a plain square, 1.0 a diamond
+  /* Selection is nearest-centre, not shape-based. The previous octagonal
+     hitboxes fixed diagonal swipes but created dead zones, so tapping a tile's
+     outer corner to START a word registered nothing. Nearest-centre has no dead
+     zones at all: on touch-down the closest tile always wins, and during a drag
+     only the current tile's 8 neighbours are even considered, so a diagonal
+     can't be stolen by an orthogonal neighbour. */
 
-  function tileIndexFromPoint(x, y){
+  function pointToBoard(x, y){
     var r = boardEl.getBoundingClientRect();
-    if(!r.width || !r.height) return -1;
-    var px = (x - r.left) / r.width * 100;
-    var py = (y - r.top) / r.height * 100;
-    var half = (100 - GAP * (SIZE - 1)) / SIZE / 2;
-    for(var i = 0; i < CELLS; i++){
-      var c = centerOf(i);
-      var dx = Math.abs(px - c.x) / half;
-      var dy = Math.abs(py - c.y) / half;
-      if(dx <= 1 && dy <= 1 && (dx + dy) <= CORNER_CUT) return i;
+    if(!r.width || !r.height) return null;
+    return { x: (x - r.left) / r.width * 100, y: (y - r.top) / r.height * 100 };
+  }
+
+  function nearestOf(px, py, list){
+    var best = -1, bestD = Infinity;
+    for(var k = 0; k < list.length; k++){
+      var c = centerOf(list[k]);
+      var dx = px - c.x, dy = py - c.y;
+      var d = dx * dx + dy * dy;
+      if(d < bestD){ bestD = d; best = list[k]; }
     }
-    return -1;
+    return { index: best, dist: Math.sqrt(bestD) };
+  }
+
+  var ALL_CELLS = [];
+  function rebuildCellList(){
+    ALL_CELLS = [];
+    for(var i = 0; i < CELLS; i++) ALL_CELLS.push(i);
+  }
+
+  // Advances the path by at most one tile for a single sampled point.
+  function advanceTo(px, py){
+    var cur = game.path[game.path.length - 1];
+    var next = nearestOf(px, py, NEIGHBORS[cur]);
+    if(next.index < 0) return;
+
+    var c = centerOf(cur);
+    var curDist = Math.sqrt((px - c.x) * (px - c.x) + (py - c.y) * (py - c.y));
+    // Must be meaningfully past the boundary, not merely closer.
+    if(next.dist > curDist - HYSTERESIS) return;
+
+    // Already used this drag: ignore it. This is what makes the path additive —
+    // sliding back over an earlier tile does nothing rather than rewinding.
+    if(game.path.indexOf(next.index) !== -1) return;
+
+    game.path.push(next.index);
+    refreshSelection();
   }
 
   function adjacent(a, b){
@@ -486,11 +528,15 @@
 
   function onDown(e){
     if(!game.running) return;
-    var i = tileIndexFromPoint(e.clientX, e.clientY);
-    if(i < 0) return;
+    var p = pointToBoard(e.clientX, e.clientY);
+    if(!p || p.x < 0 || p.y < 0 || p.x > 100 || p.y > 100) return;
     e.preventDefault();
+    // Nearest tile among all of them, so corners and gutters still start a word.
+    var start = nearestOf(p.x, p.y, ALL_CELLS);
+    if(start.index < 0) return;
     game.dragging = true;
-    game.path = [i];
+    game.path = [start.index];
+    game.lastPoint = p;
     clearTrace();
     refreshSelection();
     try { boardEl.setPointerCapture(e.pointerId); } catch(err){}
@@ -499,29 +545,42 @@
   function onMove(e){
     if(!game.dragging) return;
     e.preventDefault();
-    var i = tileIndexFromPoint(e.clientX, e.clientY);
-    if(i < 0) return;
-    var p = game.path;
-    // Links are permanent for the life of a drag. Sliding back over the tile
-    // you just came from does nothing — the only way to undo is to let go.
-    if(p.indexOf(i) !== -1) return;
-    if(!adjacent(p[p.length - 1], i)) return;
-    p.push(i);
-    refreshSelection();
+    var p = pointToBoard(e.clientX, e.clientY);
+    if(!p) return;
+
+    var last = game.lastPoint;
+    if(last){
+      var dx = p.x - last.x, dy = p.y - last.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var steps = Math.max(1, Math.ceil(dist / SAMPLE_STEP));
+      for(var k = 1; k <= steps; k++){
+        var t = k / steps;
+        advanceTo(last.x + dx * t, last.y + dy * t);
+      }
+    } else {
+      advanceTo(p.x, p.y);
+    }
+    game.lastPoint = p;
   }
 
   function flash(kind){
     ribbon.className = "show " + kind;
     if(kind === "invalid") ribbon.classList.add("shake");
     setTimeout(function(){
-      ribbon.classList.remove("show", "valid", "dupe", "invalid", "shake");
-      ribbon.textContent = " ";
-    }, 420);
+      // Drop .show first so it fades via the CSS transition, and only blank the
+      // text once the fade has finished — otherwise it vanishes mid-fade.
+      ribbon.classList.remove("show");
+      setTimeout(function(){
+        ribbon.classList.remove("valid", "dupe", "invalid", "shake");
+        ribbon.textContent = " ";
+      }, FADE_MS);
+    }, FLASH_HOLD_MS);
   }
 
   function onUp(){
     if(!game.dragging) return;
     game.dragging = false;
+    game.lastPoint = null;
     var w = currentWord();
     game.path = [];
     for(var i = 0; i < CELLS; i++) tiles[i].classList.remove("on");
@@ -551,23 +610,37 @@
     return b.length - a.length || (a < b ? -1 : a > b ? 1 : 0);
   }
 
-  var lastTap = { chip: null, at: 0 };
+  var HOLD_MS = 450;
 
   function makeChip(w, pts, extraClass){
     var chip = document.createElement("button");
     chip.type = "button";
     chip.className = "chip" + (extraClass ? " " + extraClass : "");
     chip.innerHTML = '<span>' + w.toUpperCase() + '</span><span class="pts">' + pts + '</span>';
-    // Hand-rolled double-tap: dblclick is unreliable on touch, and a single tap
-    // still needs to trace the word on the board.
-    chip.addEventListener("click", function(){
-      var now = Date.now();
-      if(lastTap.chip === chip && now - lastTap.at < 350){
-        lastTap = { chip: null, at: 0 };
+
+    /* Tap traces the word; press and hold opens its definition. The held flag
+       swallows the click that a long press would otherwise still fire, so
+       holding never also toggles the trace. */
+    var timer = null, held = false;
+
+    function startHold(){
+      held = false;
+      clearTimeout(timer);
+      timer = setTimeout(function(){
+        held = true;
         showDefinition(w);
-        return;
-      }
-      lastTap = { chip: chip, at: now };
+      }, HOLD_MS);
+    }
+    function cancelHold(){ clearTimeout(timer); }
+
+    chip.addEventListener("pointerdown", startHold);
+    chip.addEventListener("pointerup", cancelHold);
+    chip.addEventListener("pointerleave", cancelHold);
+    chip.addEventListener("pointercancel", cancelHold);
+    chip.addEventListener("contextmenu", function(e){ e.preventDefault(); });
+
+    chip.addEventListener("click", function(){
+      if(held){ held = false; return; }
       traceWord(w, chip);
     });
     return chip;
@@ -636,18 +709,20 @@
     game.score = 0;
     game.path = [];
     game.left = game.duration;
+    game.elapsed = 0;
 
     drawTiles();
     clearTrace();
     renderTrail([]);
     scoreEl.textContent = "0";
     countEl.textContent = "0";
-    timeEl.textContent = fmtTime(game.left);
+    timeEl.textContent = isInfinite() ? "∞" : fmtTime(game.left);
     timeEl.classList.remove("low");
     fillEl.classList.remove("low");
     fillEl.style.width = "100%";
     renderFound();
     quitBtn.hidden = true;
+    statsOpen.hidden = false;
     foundSection.hidden = true;
     results.hidden = true;
     missedChips.innerHTML = "";
@@ -663,9 +738,16 @@
     game.running = true;
     boardEl.classList.remove("masked");
     quitBtn.hidden = false;
+    statsOpen.hidden = true;
     foundSection.hidden = true;
     if(game.timer) clearInterval(game.timer);
     game.timer = setInterval(function(){
+      if(isInfinite()){
+        // No clock — count elapsed time up and never end on its own.
+        game.elapsed++;
+        timeEl.textContent = fmtTime(game.elapsed);
+        return;
+      }
       game.left--;
       timeEl.textContent = fmtTime(Math.max(0, game.left));
       fillEl.style.width = (100 * Math.max(0, game.left) / game.duration) + "%";
@@ -680,6 +762,7 @@
     game.running = false;
     game.dragging = false;
     quitBtn.hidden = true;
+    statsOpen.hidden = false;
     foundSection.hidden = false;   // the round is over, so revealing it is safe
     game.path = [];
     refreshSelection();
@@ -787,15 +870,59 @@
           });
           html += '</ol>';
         });
-        defBody.innerHTML = html || '<p class="note">No English definition listed.</p>';
+        defBody.innerHTML = html || '<p class="note">No definition found. Quite a unique word indeed!</p>';
+        fetchEtymology(w);
       })
       .catch(function(err){
         // A missing entry and a broken service are different problems, and
         // saying "no definition" for an outage would be a lie.
+        // A missing entry and an outage are different problems; calling an
+        // outage "no definition" would be a lie.
         defBody.innerHTML = (err && err.kind === "missing")
-          ? '<p class="note">No dictionary entry for this word. It is still legal here \u2014 the Collins word list carries plenty of words Wiktionary does not.</p>'
+          ? '<p class="note">No definition found. Quite a unique word indeed!</p>'
           : '<p class="note">Could not reach the dictionary just now. Check your connection and try again.</p>';
       });
+  }
+
+  /* Etymology lives in a separate section of the wiki page, so it needs its own
+     two-step lookup: find the section index, then fetch that section rendered.
+     Loaded after the definitions and appended when it lands, so the popup isn't
+     held up waiting for it. Wikitext is useless here — it's full of unexpanded
+     templates that flatten to "From , , from , from" — hence the rendered HTML. */
+  function fetchEtymology(w){
+    var api = "https://en.wiktionary.org/w/api.php?origin=*&format=json&action=parse&page=" + encodeURIComponent(w);
+    fetch(api + "&prop=sections")
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var secs = (d.parse && d.parse.sections) || [];
+        var hit = null;
+        for(var i = 0; i < secs.length; i++){
+          if(/^etymology/i.test(secs[i].line)){ hit = secs[i].index; break; }
+        }
+        if(!hit) return null;
+        return fetch(api + "&prop=text&section=" + hit).then(function(r){ return r.json(); });
+      })
+      .then(function(d){
+        if(!d || !d.parse) return;
+        var txt = stripTags(d.parse.text["*"] || "")
+          .replace(/\[edit\]/gi, "")
+          .replace(/^\s*Etymology\s*\d*/i, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if(!txt) return;
+        if(txt.length > 400) txt = txt.slice(0, 400).replace(/\s+\S*$/, "") + "…";
+        var el = document.createElement("div");
+        el.className = "etym";
+        el.innerHTML = "<b>Origin</b>" + escapeHtml(decodeEntities(txt));
+        defBody.appendChild(el);
+      })
+      .catch(function(){});
+  }
+
+  function decodeEntities(str){
+    var t = document.createElement("textarea");
+    t.innerHTML = str;
+    return t.value;
   }
 
   // Wiktionary returns definitions as HTML; render them as plain text so no
@@ -829,19 +956,41 @@
       return '<div class="stat-row"><span>' + n + '×' + n + ' best score</span>' +
              '<span class="v">' + v.toLocaleString() + '</span></div>';
     });
-    var bw = stats.bestWord;
-    rows.push('<div class="stat-row"><span>Longest word</span><span class="v">' +
-      (bw.word ? bw.word.toUpperCase() + ' (' + bw.pts + ')' : '—') + '</span></div>');
+    var lw = stats.longest, words = lw.words || [];
+    var newest = words.length ? words[words.length - 1] : "";
+    rows.push('<div class="stat-row"><span>Longest word' +
+      (words.length > 1 ? '<button class="stat-expand" id="tie-toggle">+' + (words.length - 1) + ' more this long</button>' : '') +
+      '</span><span class="v">' +
+      (newest ? newest.toUpperCase() + ' (' + scoreOf(newest) + ')' : '—') + '</span></div>');
+
+    if(words.length > 1){
+      rows.push('<div class="stat-more" id="tie-list" hidden>' +
+        words.slice().reverse().map(function(w){
+          return '<span class="chip">' + w.toUpperCase() + '</span>';
+        }).join("") + '</div>');
+    }
+
     rows.push('<div class="stat-row"><span>Rounds played</span><span class="v">' +
       stats.games + '</span></div>');
     statTable.innerHTML = rows.join("");
+
+    var toggle = $("tie-toggle"), list = $("tie-list");
+    if(toggle && list){
+      toggle.addEventListener("click", function(e){
+        e.stopPropagation();
+        list.hidden = !list.hidden;
+        toggle.textContent = list.hidden
+          ? "+" + (words.length - 1) + " more this long"
+          : "hide";
+      });
+    }
   }
 
   statsBtn.addEventListener("click", openStats);
   statsClose.addEventListener("click", closeStats);
 
   statsReset.addEventListener("click", function(){
-    stats = { best: {}, bestWord: { word: "", pts: 0 }, games: 0 };
+    stats = { best: {}, longest: { len: 0, words: [] }, games: 0 };
     saveStats(stats);
     renderStats();
   });
@@ -896,6 +1045,9 @@
   });
 
   // ---------- boot ----------
+
+  // Single source of truth for the fade: JS owns the number, CSS reads it.
+  document.documentElement.style.setProperty("--flash-fade", (FADE_MS / 1000) + "s");
 
   initHaptics();
   paintSoundBtn();

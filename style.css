@@ -32,6 +32,7 @@ html{
 
 body{
   margin:0;
+  touch-action:manipulation;
   user-select:none;
   -webkit-user-select:none;
   background:var(--ground);
@@ -87,6 +88,7 @@ body{
   border:2px solid var(--edge); opacity:0; white-space:nowrap;
 }
 
+#ribbon-chip{ transition:opacity var(--flash-fade, .3s) ease; }
 #ribbon-chip.show{ opacity:1; }
 #ribbon-chip.valid{ background:var(--valid); color:#06231a; border-color:var(--valid); }
 #ribbon-chip.dupe{ background:var(--dupe); color:#04263f; border-color:var(--dupe); }
@@ -137,7 +139,7 @@ body{
 .board.size-3 .tile{ font-size:18.1cqw; border-radius:12%; }
 .board.size-4 .tile{ font-size:13.1cqw; border-radius:13%; }
 .board.size-5 .tile{ font-size:10.1cqw; }
-.board.size-6 .tile{ font-size:8.4cqw; border-radius:15%; }
+.board.size-6 .tile{ font-size:9.4cqw; border-radius:16%; }
 
 /* The board is unreadable until the round starts, so the start menu can't be
    used to scout letters in advance. */
@@ -397,13 +399,16 @@ body.modal-open{ overflow:hidden; }
   text-align:left;
   user-select:text;
   -webkit-user-select:text;
-  max-height:80vh;
+  max-width:340px;
+  max-height:min(60vh, 460px);
   overflow-y:auto;
+  padding:22px 24px;
+  gap:10px;
 }
 
 .def-word{
   font-family:"Times New Roman", Times, serif;
-  font-size:30px;
+  font-size:26px;
   font-weight:700;
   margin:0;
   padding-right:36px;
@@ -411,9 +416,25 @@ body.modal-open{ overflow:hidden; }
 
 .def-body{
   font-family:"Times New Roman", Times, serif;
-  font-size:17px;
-  line-height:1.5;
+  font-size:15px;
+  line-height:1.45;
   color:var(--ink);
+}
+
+.def-body .etym{
+  font-size:14px;
+  color:var(--ink-dim);
+  border-top:1px solid var(--edge);
+  margin-top:12px;
+  padding-top:9px;
+}
+
+.def-body .etym b{
+  display:block;
+  font-variant:small-caps;
+  letter-spacing:0.04em;
+  color:var(--ink);
+  margin-bottom:2px;
 }
 
 .def-body .pos{
@@ -425,3 +446,19 @@ body.modal-open{ overflow:hidden; }
 .def-body ol{ margin:0; padding-left:22px; }
 .def-body li{ margin-bottom:5px; }
 .def-body .note{ color:var(--ink-dim); font-style:italic; }
+
+
+/* Extra words tied with your longest, hidden behind a toggle in Stats. */
+.stat-more{
+  display:flex; flex-wrap:wrap; gap:6px;
+  padding:10px 14px; background:var(--panel-2);
+}
+
+.stat-more[hidden]{ display:none; }
+
+.stat-expand{
+  background:none; border:none; padding:0;
+  color:var(--accent); cursor:pointer;
+  font-family:var(--rounded); font-weight:700; font-size:11px;
+  text-align:left;
+}
