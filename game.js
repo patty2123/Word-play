@@ -1262,41 +1262,50 @@
         doneCount + '/' + items.length + '</span></h3>';
       items.forEach(function(a){
         var done = a.check(stats);
-        html += '<div class="ach-block">';
-        html += '<div class="ach-row' + (done ? ' done' : '') + '">' +
-          '<span class="ach-trophy">\ud83c\udfc6</span>' +
-          '<span class="ach-label">' + a.label + '</span>' +
-          (done ? '<span class="ach-check">\u2713</span>' : '') +
-          '</div>';
+        html += '<div class="ach-row' + (done ? ' done' : '') + '">';
+        html += '<span class="ach-trophy">\ud83c\udfc6</span>';
+        html += '<span class="ach-label">' + a.label + '</span>';
 
-        // "Which words" expander — only on the 5/10-word tiers, and only once
-        // there's at least one word to show, same rule the longest-word tie
-        // list in Stats uses.
+        // Progress badge — only on the 5/10-word tiers, since those are the
+        // only achievements with a numeric target that "X of Y" describes.
+        // Doubles as the expand control: click it, the word list drops onto
+        // its own line INSIDE this same row (see .ach-words in style.css),
+        // so the box itself grows rather than something appearing beside it.
         if(a.wordLen){
           var bucket = stats.longWords[String(a.wordLen)] || {};
           var found = Object.keys(bucket).sort();
+          var target = a.id.indexOf("five") === 0 ? 5 : 10;
+          var shown = Math.min(found.length, target);
+          var listId = "ach-words-" + a.id;
+
           if(found.length){
-            var expId = "ach-exp-" + a.id, listId = "ach-words-" + a.id;
-            html += '<button type="button" class="stat-expand ach-expand" id="' + expId +
-              '" data-target="' + listId + '" data-count="' + found.length + '">+' +
-              found.length + ' found</button>';
-            html += '<div class="stat-more ach-words" id="' + listId + '" hidden>' +
-              found.map(function(w){ return '<span class="chip">' + w.toUpperCase() + '</span>'; }).join("") +
-              '</div>';
+            html += '<button type="button" class="ach-progress" data-target="' + listId + '">' +
+              shown + ' of ' + target + '</button>';
+          } else {
+            html += '<span class="ach-progress" disabled>' + shown + ' of ' + target + '</span>';
           }
         }
+
+        if(done) html += '<span class="ach-check">\u2713</span>';
+
+        if(a.wordLen && found.length){
+          html += '<div class="ach-words" id="' + listId + '" hidden>' +
+            found.map(function(w){ return '<span class="chip">' + w.toUpperCase() + '</span>'; }).join("") +
+            '</div>';
+        }
+
         html += '</div>';
       });
     });
     achList.innerHTML = html;
 
-    achList.querySelectorAll(".ach-expand").forEach(function(btn){
+    achList.querySelectorAll(".ach-progress[data-target]").forEach(function(btn){
       btn.addEventListener("click", function(e){
         e.stopPropagation();
         var target = document.getElementById(btn.dataset.target);
         if(!target) return;
         target.hidden = !target.hidden;
-        btn.textContent = (target.hidden ? "+" : "\u2212") + btn.dataset.count + " found";
+        btn.classList.toggle("open", !target.hidden);
       });
     });
   }
