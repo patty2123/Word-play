@@ -467,3 +467,79 @@ body.modal-open{ overflow:hidden; }
   font-family:var(--rounded); font-weight:700; font-size:11px;
   text-align:left;
 }
+
+
+/* ---------- achievements ---------- */
+
+.ach-card{
+  max-width:420px;
+  max-height:min(75vh, 560px);
+  overflow-y:auto;
+  text-align:left;
+}
+
+.ach-list{ display:flex; flex-direction:column; gap:2px; }
+
+.ach-cat{
+  margin:14px 0 6px;
+  font-family:var(--rounded);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:0.1em;
+  text-transform:uppercase;
+  color:var(--ink-dim);
+  display:flex;
+  justify-content:space-between;
+  padding-bottom:6px;
+  border-bottom:1px solid var(--edge);
+}
+
+.ach-cat:first-child{ margin-top:0; }
+
+.ach-cat-count{
+  font-variant-numeric:tabular-nums;
+  color:var(--ink-dim);
+}
+
+.ach-row{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:9px 10px;
+  border-radius:10px;
+  background:var(--panel-2);
+}
+
+.ach-row + .ach-row{ margin-top:3px; }
+
+/* Locked: same trophy glyph, desaturated and dim, so completion reads as
+   "lit up" rather than a different icon appearing. */
+.ach-trophy{
+  font-size:18px;
+  filter:grayscale(1);
+  opacity:0.35;
+}
+
+.ach-row.done{
+  background:rgba(61,214,140,0.14);
+  border:1px solid rgba(61,214,140,0.35);
+}
+
+.ach-row.done .ach-trophy{
+  filter:none;
+  opacity:1;
+}
+
+.ach-label{
+  flex:1;
+  font-size:14px;
+  color:var(--ink);
+}
+
+.ach-row:not(.done) .ach-label{ color:var(--ink-dim); }
+
+.ach-check{
+  color:var(--valid);
+  font-weight:800;
+  font-size:15px;
+}

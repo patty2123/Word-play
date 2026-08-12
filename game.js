@@ -259,6 +259,8 @@
   var statsOpen = $("stats-open"), statsCloseX = $("stats-close-x"), readyClose = $("ready-close");
   var defOverlay = $("def-overlay"), defWord = $("def-word"), defBody = $("def-body"), defClose = $("def-close");
   var potentialEl = $("board-potential");
+  var achOverlay = $("ach-overlay"), achList = $("ach-list");
+  var achOpen = $("ach-open"), achBtnReady = $("ach-btn-ready"), achCloseX = $("ach-close-x");
   var missedChips = $("missed-chips"), showAllBtn = $("show-all-btn"), againBtn = $("again-btn");
 
   var tiles = [];
@@ -318,9 +320,18 @@
       // so the newest is simply the last one.
       s.longest = s.longest || { len: 0, words: [] };
       s.games = s.games || 0;
+      // Separate from `best`: only updated by timed rounds, since infinite mode
+      // has no clock and would trivialize the high-score achievements below.
+      s.bestTimedScore = s.bestTimedScore || {};
+      // Lifetime counts of words found in a length range, for the long-word
+      // achievements — cumulative across every round ever played.
+      s.longFinds = s.longFinds || { range6to11: 0, range8to11: 0 };
       return s;
     } catch(err){
-      return { best: {}, longest: { len: 0, words: [] }, games: 0 };
+      return {
+        best: {}, longest: { len: 0, words: [] }, games: 0,
+        bestTimedScore: {}, longFinds: { range6to11: 0, range8to11: 0 }
+      };
     }
   }
 
@@ -333,12 +344,20 @@
     var key = String(SIZE);
     if(game.score > (stats.best[key] || 0)) stats.best[key] = game.score;
 
+    // "Timed matches only" per the achievement spec — infinite mode has no
+    // clock, so it would trivially clear every score threshold.
+    if(!isInfinite() && game.score > (stats.bestTimedScore[key] || 0)){
+      stats.bestTimedScore[key] = game.score;
+    }
+
     game.found.forEach(function(pts, w){
       if(w.length > stats.longest.len){
         stats.longest = { len: w.length, words: [w] };      // new record, reset ties
       } else if(w.length === stats.longest.len && stats.longest.words.indexOf(w) === -1){
         stats.longest.words.push(w);
       }
+      if(w.length >= 6 && w.length <= 11) stats.longFinds.range6to11++;
+      if(w.length >= 8 && w.length <= 11) stats.longFinds.range8to11++;
     });
     saveStats(stats);
   }
@@ -935,7 +954,7 @@
 
   // Any open modal locks the page so the board can't be scrolled away behind it.
   function syncScrollLock(){
-    var open = !overlay.hidden || !statsOverlay.hidden || !defOverlay.hidden;
+    var open = !overlay.hidden || !statsOverlay.hidden || !defOverlay.hidden || !achOverlay.hidden;
     document.body.classList.toggle("modal-open", open);
   }
 
@@ -1061,7 +1080,7 @@
   });
 
   function renderStats(){
-    var rows = [3, 4, 5].map(function(n){
+    var rows = [3, 4, 5, 6].map(function(n){
       var v = stats.best[String(n)] || 0;
       return '<div class="stat-row"><span>' + n + '×' + n + ' best score</span>' +
              '<span class="v">' + v.toLocaleString() + '</span></div>';
@@ -1069,9 +1088,11 @@
     var lw = stats.longest, words = lw.words || [];
     var newest = words.length ? words[words.length - 1] : "";
     rows.push('<div class="stat-row"><span>Longest word' +
-      (words.length > 1 ? '<button class="stat-expand" id="tie-toggle">+' + (words.length - 1) + ' more this long</button>' : '') +
+      (words.length > 1 ? ' <button class="stat-expand" id="tie-toggle">+' + (words.length - 1) + ' more this long</button>' : '') +
       '</span><span class="v">' +
-      (newest ? newest.toUpperCase() + ' (' + scoreOf(newest) + ')' : '—') + '</span></div>');
+      // Parenthetical is letter count, not score — the chips in the expanded
+      // tie list already show score per word if that's wanted.
+      (newest ? newest.toUpperCase() + ' (' + newest.length + ')' : '—') + '</span></div>');
 
     if(words.length > 1){
       rows.push('<div class="stat-more" id="tie-list" hidden>' +
@@ -1096,11 +1117,76 @@
     }
   }
 
+  // ---------- achievements ----------
+
+  var HS_TIERS = {
+    3: [20000, 25000, 30000],
+    4: [30000, 35000, 40000],
+    5: [40000, 45000, 50000],
+    6: [45000, 50000, 55000]
+  };
+
+  var ACHIEVEMENTS = (function(){
+    var list = [
+      { cat: "Long Words", label: "Find a 6\u201311 letter word",
+        check: function(s){ return (s.longFinds.range6to11 || 0) >= 1; } },
+      { cat: "Long Words", label: "Find 5 words, 8\u201311 letters",
+        check: function(s){ return (s.longFinds.range8to11 || 0) >= 5; } },
+      { cat: "Long Words", label: "Find 10 words, 8\u201311 letters",
+        check: function(s){ return (s.longFinds.range8to11 || 0) >= 10; } }
+    ];
+    [3, 4, 5, 6].forEach(function(size){
+      HS_TIERS[size].forEach(function(threshold){
+        list.push({
+          cat: "High Scores (timed only)",
+          label: size + "\u00d7" + size + " \u2014 " + threshold.toLocaleString() + " pts",
+          check: function(s){ return (s.bestTimedScore[String(size)] || 0) >= threshold; }
+        });
+      });
+    });
+    return list;
+  })();
+
+  function renderAchievements(){
+    var byCat = {}, order = [];
+    ACHIEVEMENTS.forEach(function(a){
+      if(!byCat[a.cat]){ byCat[a.cat] = []; order.push(a.cat); }
+      byCat[a.cat].push(a);
+    });
+
+    var html = "";
+    order.forEach(function(cat){
+      var items = byCat[cat];
+      var doneCount = items.filter(function(a){ return a.check(stats); }).length;
+      html += '<h3 class="ach-cat">' + cat + ' <span class="ach-cat-count">' +
+        doneCount + '/' + items.length + '</span></h3>';
+      items.forEach(function(a){
+        var done = a.check(stats);
+        html += '<div class="ach-row' + (done ? ' done' : '') + '">' +
+          '<span class="ach-trophy">' + (done ? "\ud83c\udfc6" : "\ud83c\udfc6") + '</span>' +
+          '<span class="ach-label">' + a.label + '</span>' +
+          (done ? '<span class="ach-check">\u2713</span>' : '') +
+          '</div>';
+      });
+    });
+    achList.innerHTML = html;
+  }
+
+  function openAch(){ renderAchievements(); achOverlay.hidden = false; syncScrollLock(); }
+  function closeAch(){ achOverlay.hidden = true; syncScrollLock(); }
+
+  achOpen.addEventListener("click", openAch);
+  achBtnReady.addEventListener("click", openAch);
+  achCloseX.addEventListener("click", closeAch);
+
   statsBtn.addEventListener("click", openStats);
   statsClose.addEventListener("click", closeStats);
 
   statsReset.addEventListener("click", function(){
-    stats = { best: {}, longest: { len: 0, words: [] }, games: 0 };
+    stats = {
+      best: {}, longest: { len: 0, words: [] }, games: 0,
+      bestTimedScore: {}, longFinds: { range6to11: 0, range8to11: 0 }
+    };
     saveStats(stats);
     renderStats();
   });

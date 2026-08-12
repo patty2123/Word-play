@@ -63,6 +63,7 @@
 
   <button class="btn ghost quit-btn" id="quit-btn" type="button" hidden>Quit round</button>
   <button class="btn ghost quit-btn" id="stats-open" type="button">Stats</button>
+  <button class="btn ghost quit-btn" id="ach-open" type="button">Achievements</button>
 
   <button class="update-banner" id="update-banner" type="button" hidden>
     Update available — tap to reload
@@ -108,7 +109,16 @@
     <button class="btn" id="start-btn" type="button" disabled>Loading dictionary…</button>
     <button class="btn ghost sound-btn" id="sound-btn" type="button" aria-pressed="true">Sound on</button>
     <button class="btn ghost sound-btn" id="stats-btn" type="button">Stats</button>
+    <button class="btn ghost sound-btn" id="ach-btn-ready" type="button">Achievements</button>
     <p class="build-stamp" id="build-stamp"></p>
+  </div>
+</div>
+
+<div class="overlay" id="ach-overlay" hidden>
+  <div class="card ach-card">
+    <button class="close-x" id="ach-close-x" type="button" aria-label="Close">×</button>
+    <h1>Achievements</h1>
+    <div class="ach-list" id="ach-list"></div>
   </div>
 </div>
 
