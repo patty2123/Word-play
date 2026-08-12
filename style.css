@@ -32,6 +32,8 @@ html{
 
 body{
   margin:0;
+  user-select:none;
+  -webkit-user-select:none;
   background:var(--ground);
   color:var(--ink);
   font-family:var(--sans);
@@ -135,6 +137,7 @@ body{
 .board.size-3 .tile{ font-size:18.1cqw; border-radius:12%; }
 .board.size-4 .tile{ font-size:13.1cqw; border-radius:13%; }
 .board.size-5 .tile{ font-size:10.1cqw; }
+.board.size-6 .tile{ font-size:8.4cqw; border-radius:15%; }
 
 /* The board is unreadable until the round starts, so the start menu can't be
    used to scout letters in advance. */
@@ -353,3 +356,72 @@ body{
   font-variant-numeric:tabular-nums;
   color:var(--accent);
 }
+
+
+/* Locks the page behind a modal so the board can't be scrolled away while the
+   ready screen is up. */
+body.modal-open{ overflow:hidden; }
+
+.card{ position:relative; }
+
+.close-x{
+  position:absolute;
+  top:10px; right:12px;
+  width:34px; height:34px;
+  display:flex; align-items:center; justify-content:center;
+  background:transparent;
+  border:none;
+  color:var(--ink-dim);
+  font-family:var(--sans);
+  font-size:26px;
+  line-height:1;
+  cursor:pointer;
+  border-radius:99px;
+  -webkit-tap-highlight-color:transparent;
+}
+
+.close-x:hover{ color:var(--ink); background:var(--panel-2); }
+
+.potential{
+  font-size:11px;
+  color:var(--ink-dim);
+  opacity:0.75;
+  font-variant-numeric:tabular-nums;
+  margin-top:2px;
+}
+
+/* Definitions are prose, so they get a serif face and normal text selection
+   rather than the game's UI treatment. */
+.def-card{
+  font-family:"Times New Roman", Times, serif;
+  text-align:left;
+  user-select:text;
+  -webkit-user-select:text;
+  max-height:80vh;
+  overflow-y:auto;
+}
+
+.def-word{
+  font-family:"Times New Roman", Times, serif;
+  font-size:30px;
+  font-weight:700;
+  margin:0;
+  padding-right:36px;
+}
+
+.def-body{
+  font-family:"Times New Roman", Times, serif;
+  font-size:17px;
+  line-height:1.5;
+  color:var(--ink);
+}
+
+.def-body .pos{
+  font-style:italic;
+  color:var(--ink-dim);
+  margin:12px 0 3px;
+}
+
+.def-body ol{ margin:0; padding-left:22px; }
+.def-body li{ margin-bottom:5px; }
+.def-body .note{ color:var(--ink-dim); font-style:italic; }

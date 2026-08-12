@@ -20,7 +20,14 @@
         "distty","eeghnw","eeinsu","ehrtvw","eiosst","elrtty","himnqu","hlnnrz"],
     5: ["aaafrs","aaeeee","aafirs","adennn","aeeeem","aeegmu","aegmnn","afirsy",
         "bjkqxz","ccnstw","ceiilt","ceilpt","ceipst","ddhnot","dhhlor","dhhnot",
-        "dhlnor","eiiitt","emottt","ensssu","fiprsy","gorrvw","hiprry","nootuw","ooottu"]
+        "dhlnor","eiiitt","emottt","ensssu","fiprsy","gorrvw","hiprry","nootuw","ooottu"],
+    // 6x6 extends the Big Boggle set with 11 more dice drawn from it, chosen
+    // to hold the same vowel-to-consonant ratio across the bigger grid.
+    6: ["aaafrs","aaeeee","aafirs","adennn","aeeeem","aeegmu","aegmnn","afirsy",
+        "bjkqxz","ccnstw","ceiilt","ceilpt","ceipst","ddhnot","dhhlor","dhhnot",
+        "dhlnor","eiiitt","emottt","ensssu","fiprsy","gorrvw","hiprry","nootuw","ooottu",
+        "aaeeee","aeegmu","adennn","ceiilt","ensssu","dhlnor","nootuw","ccnstw",
+        "eiiitt","gorrvw","ceipst"]
   };
 
   /* Minimum quality a board has to clear before it's shown, set near the 25th
@@ -29,7 +36,8 @@
   var GATES = {
     3: { words: 30,  longest: 5, common: 12 },
     4: { words: 75,  longest: 6, common: 30 },
-    5: { words: 200, longest: 7, common: 70 }
+    5: { words: 200, longest: 7, common: 70 },
+    6: { words: 450, longest: 8, common: 180 }
   };
 
   var DICE = DICE_SETS[SIZE];
@@ -200,6 +208,9 @@
   var sizeSeg = $("size-seg"), foundSection = $("found-section");
   var statsBtn = $("stats-btn"), statsOverlay = $("stats-overlay");
   var statTable = $("stat-table"), statsClose = $("stats-close"), statsReset = $("stats-reset");
+  var statsOpen = $("stats-open"), statsCloseX = $("stats-close-x"), readyClose = $("ready-close");
+  var defOverlay = $("def-overlay"), defWord = $("def-word"), defBody = $("def-body"), defClose = $("def-close");
+  var potentialEl = $("board-potential");
   var missedChips = $("missed-chips"), showAllBtn = $("show-all-btn"), againBtn = $("again-btn");
 
   var tiles = [];
@@ -207,7 +218,7 @@
   function buildTiles(){
     boardEl.innerHTML = "";
     boardEl.style.gridTemplateColumns = "repeat(" + SIZE + ", 1fr)";
-    boardEl.classList.remove("size-3", "size-4", "size-5");
+    boardEl.classList.remove("size-3", "size-4", "size-5", "size-6");
     boardEl.classList.add("size-" + SIZE);
     tiles = [];
     for(var t = 0; t < CELLS; t++){
@@ -393,7 +404,7 @@
 
   var game = {
     cells: [], sol: null, path: [], dragging: false,
-    found: new Map(), score: 0, duration: 80, left: 80,
+    found: new Map(), score: 0, duration: 45, left: 45,
     timer: null, running: false
   };
 
@@ -443,10 +454,28 @@
     renderTrail(game.path);
   }
 
+  /* Hit testing is geometric rather than elementFromPoint so the corners can be
+     clipped. With square hitboxes, the moment a finger clips the point where
+     four tiles meet, whichever tile owns that pixel registers — which is why a
+     diagonal swipe kept snapping to the orthogonal neighbour instead. Clipping
+     each tile to an octagon leaves a dead zone at the corners, so the finger has
+     to travel meaningfully toward a tile's centre before it counts. The tiles
+     still *look* square; only the sensitive area changed. */
+  var CORNER_CUT = 1.34;   // 2.0 would be a plain square, 1.0 a diamond
+
   function tileIndexFromPoint(x, y){
-    var el = document.elementFromPoint(x, y);
-    if(!el || !el.classList || !el.classList.contains("tile")) return -1;
-    return Number(el.dataset.i);
+    var r = boardEl.getBoundingClientRect();
+    if(!r.width || !r.height) return -1;
+    var px = (x - r.left) / r.width * 100;
+    var py = (y - r.top) / r.height * 100;
+    var half = (100 - GAP * (SIZE - 1)) / SIZE / 2;
+    for(var i = 0; i < CELLS; i++){
+      var c = centerOf(i);
+      var dx = Math.abs(px - c.x) / half;
+      var dy = Math.abs(py - c.y) / half;
+      if(dx <= 1 && dy <= 1 && (dx + dy) <= CORNER_CUT) return i;
+    }
+    return -1;
   }
 
   function adjacent(a, b){
@@ -522,12 +551,25 @@
     return b.length - a.length || (a < b ? -1 : a > b ? 1 : 0);
   }
 
+  var lastTap = { chip: null, at: 0 };
+
   function makeChip(w, pts, extraClass){
     var chip = document.createElement("button");
     chip.type = "button";
     chip.className = "chip" + (extraClass ? " " + extraClass : "");
     chip.innerHTML = '<span>' + w.toUpperCase() + '</span><span class="pts">' + pts + '</span>';
-    chip.addEventListener("click", function(){ traceWord(w, chip); });
+    // Hand-rolled double-tap: dblclick is unreliable on touch, and a single tap
+    // still needs to trace the word on the board.
+    chip.addEventListener("click", function(){
+      var now = Date.now();
+      if(lastTap.chip === chip && now - lastTap.at < 350){
+        lastTap = { chip: null, at: 0 };
+        showDefinition(w);
+        return;
+      }
+      lastTap = { chip: chip, at: now };
+      traceWord(w, chip);
+    });
     return chip;
   }
 
@@ -551,8 +593,17 @@
 
   // Replays where a word actually was on the board — the point of the review screen.
   function traceWord(w, chip){
+    // Clicking the same word again untraces it, so the board can be cleared.
+    if(chip && tracedChip === chip){
+      clearTrace();
+      renderTrail([]);
+      ribbon.className = "";
+      ribbon.textContent = " ";
+      return;
+    }
     var entry = game.sol.get(w);
     clearTrace();
+    renderTrail([]);
     if(!entry) return;
     tracedChip = chip;
     if(chip) chip.classList.add("active");
@@ -608,6 +659,7 @@
 
   function startGame(){
     overlay.hidden = true;
+    syncScrollLock();
     game.running = true;
     boardEl.classList.remove("masked");
     quitBtn.hidden = false;
@@ -647,6 +699,10 @@
 
     recordRound();
 
+    var potential = 0;
+    game.sol.forEach(function(v, w){ potential += scoreOf(w); });
+    potentialEl.textContent = "of " + potential.toLocaleString() + " possible";
+
     $("final-score").textContent = game.score.toLocaleString();
     $("final-words").textContent = String(game.found.size);
     $("final-total").textContent = String(game.sol.size);
@@ -684,6 +740,89 @@
     });
   }
 
+  // Any open modal locks the page so the board can't be scrolled away behind it.
+  function syncScrollLock(){
+    var open = !overlay.hidden || !statsOverlay.hidden || !defOverlay.hidden;
+    document.body.classList.toggle("modal-open", open);
+  }
+
+  function openStats(){
+    renderStats();
+    statsOverlay.hidden = false;
+    syncScrollLock();
+  }
+
+  function closeStats(){
+    statsOverlay.hidden = true;
+    syncScrollLock();
+  }
+
+  /* Definitions come from Wiktionary's REST API. The obvious choice,
+     dictionaryapi.dev, turned out to 502 on almost every request and has poor
+     coverage of obscure words; Wiktionary runs on Wikimedia infrastructure,
+     sends CORS headers, and actually has entries for the Collins long tail
+     (TOCCATINAS, WOOLIES). Still needs a connection — there's no way to ship
+     268k definitions in the bundle. */
+  function showDefinition(w){
+    defWord.textContent = w.toUpperCase();
+    defBody.innerHTML = '<p class="note">Looking it up\u2026</p>';
+    defOverlay.hidden = false;
+    syncScrollLock();
+
+    var url = "https://en.wiktionary.org/api/rest_v1/page/definition/" + encodeURIComponent(w);
+
+    fetch(url)
+      .then(function(r){
+        if(r.status === 404) throw { kind: "missing" };
+        if(!r.ok) throw { kind: "down" };
+        return r.json();
+      })
+      .then(function(data){
+        var sections = (data && data.en) || [];
+        var html = "";
+        sections.slice(0, 4).forEach(function(sec){
+          html += '<p class="pos">' + escapeHtml(sec.partOfSpeech || "") + '</p><ol>';
+          (sec.definitions || []).slice(0, 3).forEach(function(d){
+            html += '<li>' + escapeHtml(stripTags(d.definition || "")) + '</li>';
+          });
+          html += '</ol>';
+        });
+        defBody.innerHTML = html || '<p class="note">No English definition listed.</p>';
+      })
+      .catch(function(err){
+        // A missing entry and a broken service are different problems, and
+        // saying "no definition" for an outage would be a lie.
+        defBody.innerHTML = (err && err.kind === "missing")
+          ? '<p class="note">No dictionary entry for this word. It is still legal here \u2014 the Collins word list carries plenty of words Wiktionary does not.</p>'
+          : '<p class="note">Could not reach the dictionary just now. Check your connection and try again.</p>';
+      });
+  }
+
+  // Wiktionary returns definitions as HTML; render them as plain text so no
+  // markup from the wiki can be injected into the page.
+  function stripTags(str){ return str.replace(/<[^>]*>/g, ""); }
+
+  function escapeHtml(str){
+    return str.replace(/[&<>"']/g, function(c){
+      return { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c];
+    });
+  }
+
+  defClose.addEventListener("click", function(){
+    defOverlay.hidden = true;
+    syncScrollLock();
+  });
+
+  statsOpen.addEventListener("click", openStats);
+  statsCloseX.addEventListener("click", closeStats);
+
+  // Closing the ready screen without playing, so the last board stays reviewable.
+  readyClose.addEventListener("click", function(){
+    overlay.hidden = true;
+    boardEl.classList.remove("masked");
+    syncScrollLock();
+  });
+
   function renderStats(){
     var rows = [3, 4, 5].map(function(n){
       var v = stats.best[String(n)] || 0;
@@ -698,12 +837,8 @@
     statTable.innerHTML = rows.join("");
   }
 
-  statsBtn.addEventListener("click", function(){
-    renderStats();
-    statsOverlay.hidden = false;
-  });
-
-  statsClose.addEventListener("click", function(){ statsOverlay.hidden = true; });
+  statsBtn.addEventListener("click", openStats);
+  statsClose.addEventListener("click", closeStats);
 
   statsReset.addEventListener("click", function(){
     stats = { best: {}, bestWord: { word: "", pts: 0 }, games: 0 };
@@ -757,6 +892,7 @@
     startBtn.textContent = "Start";
     boardEl.classList.add("masked");
     overlay.hidden = false;
+    syncScrollLock();
   });
 
   // ---------- boot ----------
@@ -764,6 +900,7 @@
   initHaptics();
   paintSoundBtn();
   setBoardSize(SIZE);
+  syncScrollLock();   // the ready overlay is open on load
 
   setTimeout(function(){
     var d = decodeDict(window.WORDHUNT_DICT);
