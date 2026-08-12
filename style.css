@@ -153,7 +153,10 @@ body{
 #trail{ position:absolute; inset:0; pointer-events:none; }
 
 #trail-line{
-  fill:none; stroke:var(--accent); stroke-width:4.5;
+  fill:none; stroke:var(--accent);
+  /* set per board size in computeGeometry() — a fixed width reads as twice as
+     thick on a 6x6 grid as on a 3x3 one */
+  stroke-width:2.44;
   stroke-linecap:round; stroke-linejoin:round; opacity:0.85;
 }
 
@@ -249,6 +252,8 @@ body{
   padding:11px 0; border-radius:99px; cursor:pointer;
   -webkit-tap-highlight-color:transparent;
 }
+
+.seg button[data-sec="0"]{ font-size:22px; line-height:0.8; padding:6px 0 8px; }
 
 .seg button.on{ background:var(--accent); color:#2b1d00; }
 

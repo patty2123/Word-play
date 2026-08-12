@@ -354,6 +354,25 @@
     osc.stop(t0 + dur + 0.02);
   }
 
+  /* Two quiet clicks that sit under the main ding rather than competing with
+     it: one per letter picked up, and one when the letters first spell
+     something valid. Both are deliberately much softer than the word ding. */
+  function selectTick(len){
+    if(!soundOn || !audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    // Rises as the word grows, so a long chain audibly builds.
+    var f = 520 * Math.pow(1.055, Math.min(len, 12) - 1);
+    tone(f, 0, 0.035, 0.055, "triangle");
+  }
+
+  function wordFormedTick(){
+    if(!soundOn || !audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    // A clean interval, so "this is a word" is distinct from "letter added".
+    tone(784, 0,     0.075, 0.075, "sine");
+    tone(1175, 0.03, 0.085, 0.055, "sine");
+  }
+
   // Clock tick for the last ten seconds; climbs in pitch as it runs out.
   function tick(secondsLeft){
     if(!soundOn || !audioCtx) return;
@@ -408,6 +427,9 @@
     STEP = tile + GAP;
     // Stops the selection flickering while a finger sits on a tile boundary.
     HYSTERESIS = STEP * 0.12;
+    // Trail thickness tracks tile size, so it reads the same on every board
+    // instead of thickening as the grid gets denser.
+    trailLine.setAttribute("stroke-width", (tile * 0.14).toFixed(2));
     // Fast flicks arrive as sparse pointermove events; the gap between them is
     // resampled at this spacing so a quick diagonal can't skip a tile.
     SAMPLE_STEP = STEP * 0.25;
@@ -459,15 +481,20 @@
     boardEl.classList.remove("is-valid", "is-dupe");
     ribbon.className = "";
 
-    if(!w){ ribbon.textContent = " "; renderTrail(game.path); return; }
+    if(!w){ game.wasValidNew = false; ribbon.textContent = " "; renderTrail(game.path); return; }
 
     ribbon.classList.add("show");
     ribbon.textContent = w.toUpperCase();
 
+    var isValidNew = false;
     if(w.length >= 3 && game.sol.has(w)){
       if(game.found.has(w)){ ribbon.classList.add("dupe"); boardEl.classList.add("is-dupe"); }
-      else { ribbon.classList.add("valid"); boardEl.classList.add("is-valid"); }
+      else { ribbon.classList.add("valid"); boardEl.classList.add("is-valid"); isValidNew = true; }
     }
+    // Only on the edge into validity, or it would re-fire on every letter after.
+    if(isValidNew && !game.wasValidNew) wordFormedTick();
+    game.wasValidNew = isValidNew;
+
     renderTrail(game.path);
   }
 
@@ -517,6 +544,7 @@
     if(game.path.indexOf(next.index) !== -1) return;
 
     game.path.push(next.index);
+    selectTick(game.path.length);
     refreshSelection();
   }
 
@@ -537,6 +565,7 @@
     game.dragging = true;
     game.path = [start.index];
     game.lastPoint = p;
+    game.wasValidNew = false;
     clearTrace();
     refreshSelection();
     try { boardEl.setPointerCapture(e.pointerId); } catch(err){}
@@ -581,6 +610,7 @@
     if(!game.dragging) return;
     game.dragging = false;
     game.lastPoint = null;
+    game.wasValidNew = false;
     var w = currentWord();
     game.path = [];
     for(var i = 0; i < CELLS; i++) tiles[i].classList.remove("on");
