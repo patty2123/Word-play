@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- viewport-fit=cover lets the page paint under the notch; user-scalable=no
+     stops a double-tap during fast play from zooming the board -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Word Hunt</title>
+
+<!-- Home Screen / standalone app behaviour on iOS -->
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Word Hunt" />
+<meta name="theme-color" content="#0e1520" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-180.png" />
+
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="hud">
+    <div class="stat">
+      <span class="stat-label">Score</span>
+      <span class="stat-value" id="score-value">0</span>
+    </div>
+    <div class="stat right">
+      <span class="stat-label">Time</span>
+      <span class="stat-value" id="time-value">0:80</span>
+    </div>
+  </div>
+
+  <div class="timer-track"><div id="timer-fill"></div></div>
+
+  <div class="ribbon"><span id="ribbon-chip">&nbsp;</span></div>
+
+  <div class="board-stage">
+    <div class="board masked" id="board"></div>
+    <svg id="trail" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <polyline id="trail-line" points="" />
+    </svg>
+  </div>
+
+  <div id="found-section" hidden>
+    <div class="found-head">
+      <h2>Words found</h2>
+      <span class="found-count" id="found-count">0</span>
+    </div>
+    <div class="chips" id="found-chips">
+      <p class="empty-hint" id="found-hint">Drag across touching letters to spell a word.</p>
+    </div>
+  </div>
+
+  <button class="btn ghost quit-btn" id="quit-btn" type="button" hidden>Quit round</button>
+
+  <button class="update-banner" id="update-banner" type="button" hidden>
+    Update available — tap to reload
+  </button>
+
+  <div id="results" hidden>
+    <div class="final-row">
+      <div class="final-cell"><span class="k">Final score</span><span class="v" id="final-score">0</span></div>
+      <div class="final-cell"><span class="k">Words</span><span class="v" id="final-words">0</span></div>
+      <div class="final-cell"><span class="k">On board</span><span class="v" id="final-total">0</span></div>
+    </div>
+
+    <div class="res-block">
+      <h3>Common words you missed</h3>
+      <p class="hint">Tap any word to trace it on the board.</p>
+      <div class="chips" id="missed-chips"></div>
+      <button class="btn ghost" id="show-all-btn" type="button">Show all missed words</button>
+    </div>
+
+    <button class="btn" id="again-btn" type="button">New board</button>
+  </div>
+
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="card">
+    <h1 id="ov-title">Word Hunt</h1>
+    <p id="ov-text">Drag across touching letters to spell words. Longer words score much more.</p>
+    <div class="seg" id="dur-seg">
+      <button type="button" data-sec="80" class="on">0:80</button>
+      <button type="button" data-sec="120">2:00</button>
+      <button type="button" data-sec="180">3:00</button>
+    </div>
+    <div class="seg" id="size-seg">
+      <button type="button" data-size="3">3×3</button>
+      <button type="button" data-size="4">4×4</button>
+      <button type="button" data-size="5" class="on">5×5</button>
+    </div>
+    <button class="btn" id="start-btn" type="button" disabled>Loading dictionary…</button>
+    <button class="btn ghost sound-btn" id="sound-btn" type="button" aria-pressed="true">Sound on</button>
+    <button class="btn ghost sound-btn" id="stats-btn" type="button">Stats</button>
+    <p class="build-stamp" id="build-stamp"></p>
+  </div>
+</div>
+
+<div class="overlay" id="stats-overlay" hidden>
+  <div class="card">
+    <h1>Stats</h1>
+    <div class="stat-table" id="stat-table"></div>
+    <button class="btn" id="stats-close" type="button">Close</button>
+    <button class="btn ghost sound-btn" id="stats-reset" type="button">Reset stats</button>
+  </div>
+</div>
+
+<script src="build-info.js"></script>
+<script src="dict.js"></script>
+<script src="game.js"></script>
+<script>
+  var stamp = document.getElementById("build-stamp");
+  if (stamp) stamp.textContent = window.WORDHUNT_BUILD ? "build " + window.WORDHUNT_BUILD : "";
+</script>
+<script>
+  // Offline caching + "is there a new version" both live in sw.js; this just
+  // wires the page to it. Service workers only run on HTTPS or localhost —
+  // on a plain LAN dev URL this whole block quietly does nothing, so the app
+  // still works, it just won't cache or self-update until it's HTTPS-hosted.
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    window.addEventListener("load", function(){
+      navigator.serviceWorker.register("sw.js").then(function(reg){
+
+        // A cache-first worker never notices a new version on its own — it
+        // has to be told to go check. This is that: every time the app comes
+        // back to the foreground (reopened from the Home Screen, tab refocused),
+        // ask the browser to re-fetch sw.js and compare it byte-for-byte.
+        document.addEventListener("visibilitychange", function(){
+          if(document.visibilityState === "visible") reg.update().catch(function(){});
+        });
+
+      }).catch(function(){});
+
+      // activate() in sw.js only fires this once a version bump has actually
+      // taken over — see the ASSET_VERSION comment there.
+      navigator.serviceWorker.addEventListener("message", function(e){
+        if(e.data && e.data.type === "wordhunt-updated") showUpdateBanner();
+      });
+    });
+  }
+
+  function showUpdateBanner(){
+    var b = document.getElementById("update-banner");
+    b.hidden = false;
+    b.onclick = function(){ location.reload(); };
+  }
+</script>
+</body>
+</html>

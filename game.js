@@ -1,0 +1,779 @@
+/* Word Hunt 5x5 — game logic
+   Input runs on Pointer Events, so the same code path serves a mouse drag
+   and a finger drag with no branching. */
+
+(function(){
+  "use strict";
+
+  var SIZE = 5, CELLS = 25;
+  var SCORE_BY_LEN = { 3:100, 4:400, 5:800, 6:1400, 7:1800, 8:2200, 9:2600 };
+  function scoreOf(w){ return w.length >= 10 ? 3000 : (SCORE_BY_LEN[w.length] || 0); }
+
+  /* Real Boggle dice, not random letters — random letters produce consonant
+     soup. 5x5 is the Big Boggle set and 4x4 the classic set; 3x3 has no
+     official set, so it's a 9-die subset of Big Boggle picked for vowel
+     balance. The classic set's "Qu" face is just Q here, since tiles are
+     single letters now. */
+  var DICE_SETS = {
+    3: ["aaeeee","aeegmu","aaafrs","adennn","ceiilt","ensssu","dhlnor","nootuw","ccnstw"],
+    4: ["aaeegn","abbjoo","achops","affkps","aoottw","cimotu","deilrx","delrvy",
+        "distty","eeghnw","eeinsu","ehrtvw","eiosst","elrtty","himnqu","hlnnrz"],
+    5: ["aaafrs","aaeeee","aafirs","adennn","aeeeem","aeegmu","aegmnn","afirsy",
+        "bjkqxz","ccnstw","ceiilt","ceilpt","ceipst","ddhnot","dhhlor","dhhnot",
+        "dhlnor","eiiitt","emottt","ensssu","fiprsy","gorrvw","hiprry","nootuw","ooottu"]
+  };
+
+  /* Minimum quality a board has to clear before it's shown, set near the 25th
+     percentile of what each size actually produces (measured, not guessed), so
+     roughly three boards in four pass on the first roll. */
+  var GATES = {
+    3: { words: 30,  longest: 5, common: 12 },
+    4: { words: 75,  longest: 6, common: 30 },
+    5: { words: 200, longest: 7, common: 70 }
+  };
+
+  var DICE = DICE_SETS[SIZE];
+  var GATE = GATES[SIZE];
+
+  var WORDS = [], COMMON = null, MASKS = null;
+
+  /* Dictionary arrives front-coded: one marker char holding how many leading
+     characters this word shares with the previous one, then the new suffix.
+     An uppercase first letter of the suffix flags a common (non-obscure) word. */
+  function decodeDict(enc){
+    var words = [], common = [], prev = "", i = 0, n = enc.length;
+    while(i < n){
+      var shared = enc.charCodeAt(i) - 32;
+      i++;
+      var j = i;
+      while(j < n && enc.charCodeAt(j) >= 65) j++;
+      var suf = enc.slice(i, j);
+      i = j;
+      var isCommon = suf.charCodeAt(0) <= 90;
+      if(isCommon) suf = suf.charAt(0).toLowerCase() + suf.slice(1);
+      var w = prev.slice(0, shared) + suf;
+      words.push(w);
+      common.push(isCommon);
+      prev = w;
+    }
+    return { words: words, common: common };
+  }
+
+  function buildMasks(){
+    var m = new Uint32Array(WORDS.length);
+    for(var i = 0; i < WORDS.length; i++){
+      var w = WORDS[i], bits = 0;
+      for(var k = 0; k < w.length; k++) bits |= (1 << (w.charCodeAt(k) - 97));
+      m[i] = bits;
+    }
+    return m;
+  }
+
+  function buildNeighbors(size){
+    var out = [];
+    for(var r = 0; r < size; r++){
+      for(var c = 0; c < size; c++){
+        var list = [];
+        for(var dr = -1; dr <= 1; dr++){
+          for(var dc = -1; dc <= 1; dc++){
+            if(!dr && !dc) continue;
+            var nr = r + dr, nc = c + dc;
+            if(nr >= 0 && nr < size && nc >= 0 && nc < size) list.push(nr * size + nc);
+          }
+        }
+        out.push(list);
+      }
+    }
+    return out;
+  }
+
+  var NEIGHBORS = buildNeighbors(SIZE);
+
+  function rollBoard(){
+    var d = DICE.slice(), cells = [];
+    for(var i = d.length - 1; i > 0; i--){
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = d[i]; d[i] = d[j]; d[j] = t;
+    }
+    for(var k = 0; k < CELLS; k++){
+      // Every tile is a single letter, Q included — no combined "Qu" tile.
+      // That makes Q genuinely hard (QUIT needs a U sitting next to it), which
+      // is the intended trade.
+      cells.push(d[k].charAt(Math.floor(Math.random() * 6)));
+    }
+    return cells;
+  }
+
+  var scratch = new Uint8Array(26);
+
+  /* Cheap two-stage filter before the expensive search: a 26-bit letter mask
+     knocks out most of the dictionary with one integer test, then only the
+     survivors get a full letter-count check. */
+  function candidates(cells){
+    var boardMask = 0, boardCount = new Uint8Array(26), i, k;
+    for(i = 0; i < cells.length; i++){
+      for(k = 0; k < cells[i].length; k++){
+        var ci = cells[i].charCodeAt(k) - 97;
+        boardMask |= (1 << ci);
+        boardCount[ci]++;
+      }
+    }
+    var out = [];
+    for(i = 0; i < WORDS.length; i++){
+      if((MASKS[i] & ~boardMask) !== 0) continue;
+      var w = WORDS[i];
+      if(w.length > CELLS) continue;
+      scratch.fill(0);
+      var ok = true;
+      for(k = 0; k < w.length; k++){
+        var idx = w.charCodeAt(k) - 97;
+        if(++scratch[idx] > boardCount[idx]){ ok = false; break; }
+      }
+      if(ok) out.push(i);
+    }
+    return out;
+  }
+
+  function solve(cells){
+    var cand = candidates(cells);
+    var root = {};
+    for(var a = 0; a < cand.length; a++){
+      var w = WORDS[cand[a]], node = root;
+      for(var k = 0; k < w.length; k++){
+        var ch = w.charAt(k);
+        node = node[ch] || (node[ch] = {});
+      }
+      node.$ = cand[a];
+    }
+
+    var found = new Map();
+    var used = new Array(CELLS).fill(false);
+    var path = [];
+
+    function dfs(i, node, str){
+      var cs = cells[i], n = node;
+      for(var k = 0; k < cs.length; k++){
+        n = n[cs.charAt(k)];
+        if(!n) return;
+      }
+      used[i] = true;
+      path.push(i);
+      var s = str + cs;
+      if(n.$ !== undefined && !found.has(s)) found.set(s, { path: path.slice(), common: COMMON[n.$] });
+      var nb = NEIGHBORS[i];
+      for(var j = 0; j < nb.length; j++) if(!used[nb[j]]) dfs(nb[j], n, s);
+      used[i] = false;
+      path.pop();
+    }
+
+    for(var i2 = 0; i2 < CELLS; i2++) dfs(i2, root, "");
+    return found;
+  }
+
+  // Solve every board before showing it, and reroll the duds.
+  function makeGoodBoard(){
+    var best = null;
+    for(var attempt = 0; attempt < 25; attempt++){
+      var cells = rollBoard();
+      var sol = solve(cells);
+      var longest = 0, commons = 0;
+      sol.forEach(function(v, w){
+        if(w.length > longest) longest = w.length;
+        if(v.common) commons++;
+      });
+      var board = { cells: cells, sol: sol };
+      if(sol.size >= GATE.words && longest >= GATE.longest && commons >= GATE.common) return board;
+      if(!best || sol.size > best.sol.size) best = board;
+    }
+    return best;
+  }
+
+  // ---------- DOM ----------
+
+  var $ = function(id){ return document.getElementById(id); };
+  var boardEl = $("board"), trailLine = $("trail-line"), ribbon = $("ribbon-chip");
+  var scoreEl = $("score-value"), timeEl = $("time-value"), fillEl = $("timer-fill");
+  var chipsEl = $("found-chips"), hintEl = $("found-hint"), countEl = $("found-count");
+  var overlay = $("overlay"), ovTitle = $("ov-title"), ovText = $("ov-text");
+  var startBtn = $("start-btn"), durSeg = $("dur-seg"), results = $("results");
+  var soundBtn = $("sound-btn"), quitBtn = $("quit-btn");
+  var sizeSeg = $("size-seg"), foundSection = $("found-section");
+  var statsBtn = $("stats-btn"), statsOverlay = $("stats-overlay");
+  var statTable = $("stat-table"), statsClose = $("stats-close"), statsReset = $("stats-reset");
+  var missedChips = $("missed-chips"), showAllBtn = $("show-all-btn"), againBtn = $("again-btn");
+
+  var tiles = [];
+
+  function buildTiles(){
+    boardEl.innerHTML = "";
+    boardEl.style.gridTemplateColumns = "repeat(" + SIZE + ", 1fr)";
+    boardEl.classList.remove("size-3", "size-4", "size-5");
+    boardEl.classList.add("size-" + SIZE);
+    tiles = [];
+    for(var t = 0; t < CELLS; t++){
+      var el = document.createElement("div");
+      el.className = "tile";
+      el.dataset.i = String(t);
+      boardEl.appendChild(el);
+      tiles.push(el);
+    }
+  }
+
+  // Switches every size-dependent piece at once: dice, gate, adjacency map,
+  // the tile grid, and the trail's coordinate math.
+  function setBoardSize(n){
+    SIZE = n;
+    CELLS = n * n;
+    DICE = DICE_SETS[n];
+    GATE = GATES[n];
+    NEIGHBORS = buildNeighbors(n);
+    computeGeometry();
+    buildTiles();
+  }
+
+  // ---------- feedback: sound + haptics ----------
+
+  var audioCtx = null;
+
+  // WKWebView can throw outright on localStorage from a file:// URL, which is
+  // how the Mac app loads — so every access goes through these.
+  function prefGet(k){ try { return localStorage.getItem(k); } catch(err){ return null; } }
+  function prefSet(k, v){ try { localStorage.setItem(k, v); } catch(err){} }
+
+  var soundOn = prefGet("wordhunt-sound") !== "off";
+
+  // ---------- persistent stats ----------
+
+  var STATS_KEY = "wordhunt-stats";
+
+  function loadStats(){
+    try {
+      var raw = prefGet(STATS_KEY);
+      var s = raw ? JSON.parse(raw) : null;
+      if(!s || typeof s !== "object") throw 0;
+      s.best = s.best || {};
+      s.bestWord = s.bestWord || { word: "", pts: 0 };
+      s.games = s.games || 0;
+      return s;
+    } catch(err){
+      return { best: {}, bestWord: { word: "", pts: 0 }, games: 0 };
+    }
+  }
+
+  function saveStats(s){ prefSet(STATS_KEY, JSON.stringify(s)); }
+
+  var stats = loadStats();
+
+  function recordRound(){
+    stats.games++;
+    var key = String(SIZE);
+    if(game.score > (stats.best[key] || 0)) stats.best[key] = game.score;
+    // "Best word" ranks by length first — score is derived from length anyway,
+    // so this keeps ties resolving to the word you'd actually brag about.
+    game.found.forEach(function(pts, w){
+      var cur = stats.bestWord;
+      if(!cur.word || w.length > cur.word.length){
+        stats.bestWord = { word: w, pts: pts, size: SIZE };
+      }
+    });
+    saveStats(stats);
+  }
+
+  // iOS refuses to start an AudioContext outside a real user gesture, so this
+  // runs off the Start button rather than at load.
+  function unlockAudio(){
+    if(audioCtx) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return;
+    try {
+      audioCtx = new AC();
+      if(audioCtx.state === "suspended") audioCtx.resume();
+      // A silent one-frame buffer; without it the first real tone gets eaten.
+      var src = audioCtx.createBufferSource();
+      src.buffer = audioCtx.createBuffer(1, 1, 22050);
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch(err){ audioCtx = null; }
+  }
+
+  // Synthesised rather than a sound file, so the app stays self-contained and
+  // there's nothing extra to cache offline. Pitch climbs with word length.
+  function ding(len){
+    if(!soundOn || !audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    var now = audioCtx.currentTime;
+    var base = 700 * Math.pow(1.05, Math.min(len, 10) - 3);
+    [[base, 0.25], [base * 2, 0.1]].forEach(function(voice){
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = voice[0];
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(voice[1], now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.28);
+    });
+  }
+
+  // One-off tone helper shared by the countdown and the end-of-round chime.
+  function tone(freq, startIn, dur, peak, type){
+    if(!soundOn || !audioCtx) return;
+    var t0 = audioCtx.currentTime + (startIn || 0);
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = type || "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(peak, t0 + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  // Clock tick for the last ten seconds; climbs in pitch as it runs out.
+  function tick(secondsLeft){
+    if(!soundOn || !audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    var urgency = (10 - secondsLeft) / 10;          // 0 at :10, ~0.9 at :01
+    tone(880 + urgency * 320, 0, 0.06, 0.16, "triangle");
+  }
+
+  // Deliberately unlike the word ding — descending, so it reads as "over".
+  function timeUpChime(){
+    if(!soundOn || !audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    tone(660, 0,    0.5, 0.22);
+    tone(440, 0.14, 0.7, 0.20);
+  }
+
+  /* iOS has never implemented navigator.vibrate — it's ignored outright on
+     iPhone. The one lever that exists is a side effect: iOS fires the Taptic
+     Engine whenever a native toggle switch flips, so a hidden <input
+     type="checkbox" switch> (Safari 17.4+) can be clicked to borrow it.
+     Apple restricted this in iOS 26.5, so on current phones it may do nothing.
+     It fails silently either way, and Android takes the standard API path. */
+  var hapticSwitch = null;
+
+  function initHaptics(){
+    var el = document.createElement("input");
+    el.type = "checkbox";
+    el.setAttribute("switch", "");
+    // Kept rendered but off-screen; display:none can stop the haptic firing.
+    el.style.cssText = "position:fixed;top:-40px;left:-40px;width:1px;height:1px;opacity:0;pointer-events:none";
+    el.setAttribute("aria-hidden", "true");
+    el.tabIndex = -1;
+    document.body.appendChild(el);
+    hapticSwitch = el;
+  }
+
+  function buzz(){
+    if(navigator.vibrate){ try { navigator.vibrate(12); } catch(err){} }
+    if(hapticSwitch){ try { hapticSwitch.click(); } catch(err){} }
+  }
+
+  /* Tile centres in the SVG's 100x100 space, derived from the CSS grid gap so
+     the trail stays aligned at any board size without measuring the DOM:
+     SIZE tiles plus SIZE-1 gaps fill the 100 units. */
+  var GAP = 3.2, STEP = 0, OFF = 0;
+
+  function computeGeometry(){
+    var tile = (100 - GAP * (SIZE - 1)) / SIZE;
+    OFF = tile / 2;
+    STEP = tile + GAP;
+  }
+
+  function centerOf(i){
+    return { x: (i % SIZE) * STEP + OFF, y: Math.floor(i / SIZE) * STEP + OFF };
+  }
+
+  var game = {
+    cells: [], sol: null, path: [], dragging: false,
+    found: new Map(), score: 0, duration: 80, left: 80,
+    timer: null, running: false
+  };
+
+  function fmtTime(s){
+    var m = Math.floor(s / 60);
+    return m > 0 ? m + ":" + String(s % 60).padStart(2, "0") : "0:" + String(s).padStart(2, "0");
+  }
+
+  function drawTiles(){
+    for(var i = 0; i < CELLS; i++){
+      tiles[i].textContent = game.cells[i].toUpperCase();
+    }
+  }
+
+  function currentWord(){
+    var s = "";
+    for(var i = 0; i < game.path.length; i++) s += game.cells[game.path[i]];
+    return s;
+  }
+
+  function renderTrail(list){
+    var pts = [];
+    for(var i = 0; i < list.length; i++){
+      var c = centerOf(list[i]);
+      pts.push(c.x + "," + c.y);
+    }
+    trailLine.setAttribute("points", pts.join(" "));
+  }
+
+  function refreshSelection(){
+    for(var i = 0; i < CELLS; i++) tiles[i].classList.remove("on");
+    for(var k = 0; k < game.path.length; k++) tiles[game.path[k]].classList.add("on");
+
+    var w = currentWord();
+    boardEl.classList.remove("is-valid", "is-dupe");
+    ribbon.className = "";
+
+    if(!w){ ribbon.textContent = " "; renderTrail(game.path); return; }
+
+    ribbon.classList.add("show");
+    ribbon.textContent = w.toUpperCase();
+
+    if(w.length >= 3 && game.sol.has(w)){
+      if(game.found.has(w)){ ribbon.classList.add("dupe"); boardEl.classList.add("is-dupe"); }
+      else { ribbon.classList.add("valid"); boardEl.classList.add("is-valid"); }
+    }
+    renderTrail(game.path);
+  }
+
+  function tileIndexFromPoint(x, y){
+    var el = document.elementFromPoint(x, y);
+    if(!el || !el.classList || !el.classList.contains("tile")) return -1;
+    return Number(el.dataset.i);
+  }
+
+  function adjacent(a, b){
+    var ar = Math.floor(a / SIZE), ac = a % SIZE;
+    var br = Math.floor(b / SIZE), bc = b % SIZE;
+    return a !== b && Math.abs(ar - br) <= 1 && Math.abs(ac - bc) <= 1;
+  }
+
+  function onDown(e){
+    if(!game.running) return;
+    var i = tileIndexFromPoint(e.clientX, e.clientY);
+    if(i < 0) return;
+    e.preventDefault();
+    game.dragging = true;
+    game.path = [i];
+    clearTrace();
+    refreshSelection();
+    try { boardEl.setPointerCapture(e.pointerId); } catch(err){}
+  }
+
+  function onMove(e){
+    if(!game.dragging) return;
+    e.preventDefault();
+    var i = tileIndexFromPoint(e.clientX, e.clientY);
+    if(i < 0) return;
+    var p = game.path;
+    // Links are permanent for the life of a drag. Sliding back over the tile
+    // you just came from does nothing — the only way to undo is to let go.
+    if(p.indexOf(i) !== -1) return;
+    if(!adjacent(p[p.length - 1], i)) return;
+    p.push(i);
+    refreshSelection();
+  }
+
+  function flash(kind){
+    ribbon.className = "show " + kind;
+    if(kind === "invalid") ribbon.classList.add("shake");
+    setTimeout(function(){
+      ribbon.classList.remove("show", "valid", "dupe", "invalid", "shake");
+      ribbon.textContent = " ";
+    }, 420);
+  }
+
+  function onUp(){
+    if(!game.dragging) return;
+    game.dragging = false;
+    var w = currentWord();
+    game.path = [];
+    for(var i = 0; i < CELLS; i++) tiles[i].classList.remove("on");
+    boardEl.classList.remove("is-valid", "is-dupe");
+    renderTrail([]);
+
+    if(w.length < 3){ ribbon.classList.remove("show"); ribbon.textContent = " "; return; }
+    if(!game.sol.has(w)){ ribbon.textContent = w.toUpperCase(); flash("invalid"); return; }
+    if(game.found.has(w)){ ribbon.textContent = w.toUpperCase(); flash("dupe"); return; }
+
+    var pts = scoreOf(w);
+    game.found.set(w, pts);
+    game.score += pts;
+    ding(w.length);
+    buzz();
+    scoreEl.textContent = game.score.toLocaleString();
+    scoreEl.classList.remove("pop");
+    void scoreEl.offsetWidth;
+    scoreEl.classList.add("pop");
+    ribbon.textContent = w.toUpperCase() + "  +" + pts;
+    flash("valid");
+    renderFound();
+  }
+
+  // Longest words first, A-Z within each length.
+  function byLengthThenAlpha(a, b){
+    return b.length - a.length || (a < b ? -1 : a > b ? 1 : 0);
+  }
+
+  function makeChip(w, pts, extraClass){
+    var chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip" + (extraClass ? " " + extraClass : "");
+    chip.innerHTML = '<span>' + w.toUpperCase() + '</span><span class="pts">' + pts + '</span>';
+    chip.addEventListener("click", function(){ traceWord(w, chip); });
+    return chip;
+  }
+
+  // Rebuilt rather than appended to, since a new word can belong anywhere in
+  // the sort order rather than at the end.
+  function renderFound(){
+    chipsEl.innerHTML = "";
+    countEl.textContent = String(game.found.size);
+    if(!game.found.size){ chipsEl.appendChild(hintEl); return; }
+    Array.from(game.found.keys()).sort(byLengthThenAlpha).forEach(function(w){
+      chipsEl.appendChild(makeChip(w, game.found.get(w)));
+    });
+  }
+
+  var tracedChip = null;
+
+  function clearTrace(){
+    for(var i = 0; i < CELLS; i++) tiles[i].classList.remove("trace");
+    if(tracedChip){ tracedChip.classList.remove("active"); tracedChip = null; }
+  }
+
+  // Replays where a word actually was on the board — the point of the review screen.
+  function traceWord(w, chip){
+    var entry = game.sol.get(w);
+    clearTrace();
+    if(!entry) return;
+    tracedChip = chip;
+    if(chip) chip.classList.add("active");
+    for(var i = 0; i < entry.path.length; i++) tiles[entry.path[i]].classList.add("trace");
+    renderTrail(entry.path);
+    ribbon.className = "show";
+    ribbon.textContent = w.toUpperCase();
+  }
+
+  boardEl.addEventListener("pointerdown", onDown);
+  boardEl.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
+
+  // ---------- flow ----------
+
+  durSeg.addEventListener("click", function(e){
+    var b = e.target.closest("button");
+    if(!b) return;
+    Array.prototype.forEach.call(durSeg.children, function(c){ c.classList.remove("on"); });
+    b.classList.add("on");
+    game.duration = Number(b.dataset.sec);
+  });
+
+  function newGame(){
+    var board = makeGoodBoard();
+    game.cells = board.cells;
+    game.sol = board.sol;
+    game.found = new Map();
+    game.score = 0;
+    game.path = [];
+    game.left = game.duration;
+
+    drawTiles();
+    clearTrace();
+    renderTrail([]);
+    scoreEl.textContent = "0";
+    countEl.textContent = "0";
+    timeEl.textContent = fmtTime(game.left);
+    timeEl.classList.remove("low");
+    fillEl.classList.remove("low");
+    fillEl.style.width = "100%";
+    renderFound();
+    quitBtn.hidden = true;
+    foundSection.hidden = true;
+    results.hidden = true;
+    missedChips.innerHTML = "";
+    showAllBtn.textContent = "Show all missed words";
+    showAllBtn.dataset.expanded = "";
+    ribbon.className = "";
+    ribbon.textContent = " ";
+  }
+
+  function startGame(){
+    overlay.hidden = true;
+    game.running = true;
+    boardEl.classList.remove("masked");
+    quitBtn.hidden = false;
+    foundSection.hidden = true;
+    if(game.timer) clearInterval(game.timer);
+    game.timer = setInterval(function(){
+      game.left--;
+      timeEl.textContent = fmtTime(Math.max(0, game.left));
+      fillEl.style.width = (100 * Math.max(0, game.left) / game.duration) + "%";
+      if(game.left <= 10){ timeEl.classList.add("low"); fillEl.classList.add("low"); }
+      if(game.left <= 10 && game.left >= 1) tick(game.left);
+      if(game.left <= 0){ timeUpChime(); endGame(); }
+    }, 1000);
+  }
+
+  function endGame(){
+    clearInterval(game.timer);
+    game.running = false;
+    game.dragging = false;
+    quitBtn.hidden = true;
+    foundSection.hidden = false;   // the round is over, so revealing it is safe
+    game.path = [];
+    refreshSelection();
+    ribbon.className = "";
+    ribbon.textContent = " ";
+
+    var missedCommon = [], missedAll = [];
+    game.sol.forEach(function(v, w){
+      if(game.found.has(w)) return;
+      var rec = { w: w, pts: scoreOf(w) };
+      missedAll.push(rec);
+      if(v.common) missedCommon.push(rec);
+    });
+    var order = function(a, b){ return byLengthThenAlpha(a.w, b.w); };
+    missedCommon.sort(order);
+    missedAll.sort(order);
+
+    recordRound();
+
+    $("final-score").textContent = game.score.toLocaleString();
+    $("final-words").textContent = String(game.found.size);
+    $("final-total").textContent = String(game.sol.size);
+
+    renderMissed(missedCommon.slice(0, 40), true);
+    showAllBtn.onclick = function(){
+      if(showAllBtn.dataset.expanded){
+        renderMissed(missedCommon.slice(0, 40), true);
+        showAllBtn.textContent = "Show all missed words";
+        showAllBtn.dataset.expanded = "";
+      } else {
+        renderMissed(missedAll.slice(0, 300), false);
+        showAllBtn.textContent = "Show common words only";
+        showAllBtn.dataset.expanded = "1";
+      }
+    };
+
+    results.hidden = false;
+    results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderMissed(list, commonOnly){
+    missedChips.innerHTML = "";
+    if(!list.length){
+      var p = document.createElement("p");
+      p.className = "empty-hint";
+      p.textContent = commonOnly ? "You got every common word on this board." : "Nothing missed.";
+      missedChips.appendChild(p);
+      return;
+    }
+    list.forEach(function(rec){
+      missedChips.appendChild(
+        makeChip(rec.w, rec.pts, game.sol.get(rec.w).common ? "common" : "")
+      );
+    });
+  }
+
+  function renderStats(){
+    var rows = [3, 4, 5].map(function(n){
+      var v = stats.best[String(n)] || 0;
+      return '<div class="stat-row"><span>' + n + '×' + n + ' best score</span>' +
+             '<span class="v">' + v.toLocaleString() + '</span></div>';
+    });
+    var bw = stats.bestWord;
+    rows.push('<div class="stat-row"><span>Longest word</span><span class="v">' +
+      (bw.word ? bw.word.toUpperCase() + ' (' + bw.pts + ')' : '—') + '</span></div>');
+    rows.push('<div class="stat-row"><span>Rounds played</span><span class="v">' +
+      stats.games + '</span></div>');
+    statTable.innerHTML = rows.join("");
+  }
+
+  statsBtn.addEventListener("click", function(){
+    renderStats();
+    statsOverlay.hidden = false;
+  });
+
+  statsClose.addEventListener("click", function(){ statsOverlay.hidden = true; });
+
+  statsReset.addEventListener("click", function(){
+    stats = { best: {}, bestWord: { word: "", pts: 0 }, games: 0 };
+    saveStats(stats);
+    renderStats();
+  });
+
+  sizeSeg.addEventListener("click", function(e){
+    var b = e.target.closest("button");
+    if(!b) return;
+    Array.prototype.forEach.call(sizeSeg.children, function(c){ c.classList.remove("on"); });
+    b.classList.add("on");
+    setBoardSize(Number(b.dataset.size));
+    newGame();          // reroll immediately so the board behind the overlay matches
+  });
+
+  quitBtn.addEventListener("click", function(){
+    if(game.running) endGame();
+  });
+
+  soundBtn.addEventListener("click", function(){
+    soundOn = !soundOn;
+    prefSet("wordhunt-sound", soundOn ? "on" : "off");
+    paintSoundBtn();
+    if(soundOn){ unlockAudio(); ding(4); buzz(); }   // preview what you just turned on
+  });
+
+  function paintSoundBtn(){
+    soundBtn.textContent = soundOn ? "Sound on" : "Sound off";
+    soundBtn.setAttribute("aria-pressed", soundOn ? "true" : "false");
+    soundBtn.classList.toggle("off", !soundOn);
+  }
+
+  startBtn.addEventListener("click", function(){
+    if(startBtn.disabled) return;
+    unlockAudio();   // must happen inside the click, not after the timeout
+    startBtn.disabled = true;
+    startBtn.textContent = "Shuffling…";
+    // let the button repaint before the solver blocks the thread
+    setTimeout(function(){
+      newGame();
+      startBtn.disabled = false;
+      startBtn.textContent = "Start";
+      startGame();
+    }, 20);
+  });
+
+  againBtn.addEventListener("click", function(){
+    ovTitle.textContent = "Ready?";
+    ovText.textContent = "New board, same rules. Longer words score much more.";
+    startBtn.textContent = "Start";
+    boardEl.classList.add("masked");
+    overlay.hidden = false;
+  });
+
+  // ---------- boot ----------
+
+  initHaptics();
+  paintSoundBtn();
+  setBoardSize(SIZE);
+
+  setTimeout(function(){
+    var d = decodeDict(window.WORDHUNT_DICT);
+    WORDS = d.words;
+    COMMON = d.common;
+    MASKS = buildMasks();
+    window.WORDHUNT_DICT = null;   // release the raw string
+    newGame();
+    startBtn.disabled = false;
+    startBtn.textContent = "Start";
+  }, 30);
+
+})();
