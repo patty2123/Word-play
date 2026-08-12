@@ -16,7 +16,7 @@
    landed, so every open tab/app instance gets a postMessage about it —
    index.html turns that into the "Update available" banner. */
 
-var ASSET_VERSION = "12";
+var ASSET_VERSION = "13";
 var CACHE = "wordhunt-v" + ASSET_VERSION;
 
 var ASSETS = [
@@ -58,15 +58,52 @@ function notifyClients(){
   });
 }
 
+/* Network-first for code, cache-first for the heavy immutable assets.
+
+   This used to be cache-first for everything, which is right for a finished
+   app and wrong for one under active development: a phone that had cached a
+   build kept serving it, so a deployed fix could sit there invisibly while the
+   old behaviour persisted. Code is now always fetched fresh when online and
+   falls back to cache offline, so the app can never silently run stale logic.
+   The dictionary and icons stay cache-first — 840KB re-downloaded on every
+   load for a file that rarely changes would be wasteful, and the version bump
+   already clears them when they do. */
+
+var CACHE_FIRST = ["dict.js", "icon-180.png", "icon-192.png", "icon-512.png"];
+
+function isCacheFirst(url){
+  for(var i = 0; i < CACHE_FIRST.length; i++){
+    if(url.indexOf(CACHE_FIRST[i]) !== -1) return true;
+  }
+  return false;
+}
+
 self.addEventListener("fetch", function(e){
   if(e.request.method !== "GET") return;
+
+  if(isCacheFirst(e.request.url)){
+    e.respondWith(
+      caches.match(e.request).then(function(hit){
+        return hit || fetch(e.request).then(function(res){
+          var copy = res.clone();
+          caches.open(CACHE).then(function(c){ c.put(e.request, copy); }).catch(function(){});
+          return res;
+        });
+      })
+    );
+    return;
+  }
+
   e.respondWith(
-    caches.match(e.request).then(function(hit){
-      return hit || fetch(e.request).then(function(res){
-        var copy = res.clone();
-        caches.open(CACHE).then(function(c){ c.put(e.request, copy); }).catch(function(){});
-        return res;
+    fetch(e.request).then(function(res){
+      var copy = res.clone();
+      caches.open(CACHE).then(function(c){ c.put(e.request, copy); }).catch(function(){});
+      return res;
+    }).catch(function(){
+      // Offline: fall back to whatever was cached, then to the shell.
+      return caches.match(e.request).then(function(hit){
+        return hit || caches.match("index.html");
       });
-    }).catch(function(){ return caches.match("index.html"); })
+    })
   );
 });

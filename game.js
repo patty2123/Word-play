@@ -32,14 +32,21 @@
     // 0.42 is the circle inscribed in the tile — the finger has to genuinely
     // reach the letter. Larger = easier to pick up but sloppier; past 0.50 the
     // zones of neighbouring tiles start to overlap and it gets unpredictable.
-    coreRadius: 0.42,
+    coreRadius: 0.38,
 
     // Extra radius for the four diagonal neighbours only. They sit 1.41x
     // farther away than orthogonal ones, so a little help keeps diagonals
     // feeling as responsive as straight moves. This is the diagonal
     // forgiveness knob: raise it if diagonals feel stiff, drop it to 0 to
     // treat all eight directions identically.
-    diagonalBonus: 0.05,
+    diagonalBonus: 0.04,
+
+    // Hard floor: nothing at all can be picked up until the finger has moved
+    // this far from the CURRENT tile's centre, as a fraction of tile spacing.
+    // A tile's own half-width is about 0.42, so 0.55 means the finger must
+    // genuinely leave the square it is sitting on before anything can change.
+    // Raise this if selections still fire while you're clearly still on a tile.
+    minTravel: 0.55,
 
     // Distance between resampled points along a fast swipe, as a fraction of
     // tile spacing. Smaller catches quicker flicks at slightly more CPU.
@@ -592,6 +599,12 @@
      behaviour defined if the radii are ever tuned past 0.5. */
   function advanceTo(px, py){
     var cur = game.path[game.path.length - 1];
+
+    // Nothing changes while the finger is still over the current tile.
+    var cc = centerOf(cur);
+    var cdx = px - cc.x, cdy = py - cc.y;
+    if(Math.sqrt(cdx * cdx + cdy * cdy) < SWIPE.minTravel * STEP) return;
+
     var list = NEIGHBOR_INFO[cur];
     var best = -1, bestDist = Infinity;
 
