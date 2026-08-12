@@ -323,14 +323,22 @@
       // Separate from `best`: only updated by timed rounds, since infinite mode
       // has no clock and would trivialize the high-score achievements below.
       s.bestTimedScore = s.bestTimedScore || {};
-      // Lifetime counts of words found in a length range, for the long-word
-      // achievements — cumulative across every round ever played.
-      s.longFinds = s.longFinds || { range6to11: 0, range8to11: 0 };
+      // Distinct words ever found at each length, keyed "6".."11" -> {word:true}.
+      // Sets, not counts: finding CURLICUE three times must not count as three
+      // toward the "find 5 nine-letter words" achievement. Timed rounds only.
+      s.longWords = s.longWords || { "6":{}, "7":{}, "8":{}, "9":{}, "10":{}, "11":{} };
+      // One-way flags: once true, stay true forever, even if a later round
+      // scores lower. These two are NOT gated to timed rounds — see recordRound.
+      s.pctBadges = s.pctBadges || { p25: false, p50: false, p75: false };
+      s.fullBoard = s.fullBoard || false;
       return s;
     } catch(err){
       return {
         best: {}, longest: { len: 0, words: [] }, games: 0,
-        bestTimedScore: {}, longFinds: { range6to11: 0, range8to11: 0 }
+        bestTimedScore: {},
+        longWords: { "6":{}, "7":{}, "8":{}, "9":{}, "10":{}, "11":{} },
+        pctBadges: { p25: false, p50: false, p75: false },
+        fullBoard: false
       };
     }
   }
@@ -342,11 +350,13 @@
   function recordRound(){
     stats.games++;
     var key = String(SIZE);
+    var timed = !isInfinite();
+
     if(game.score > (stats.best[key] || 0)) stats.best[key] = game.score;
 
     // "Timed matches only" per the achievement spec — infinite mode has no
     // clock, so it would trivially clear every score threshold.
-    if(!isInfinite() && game.score > (stats.bestTimedScore[key] || 0)){
+    if(timed && game.score > (stats.bestTimedScore[key] || 0)){
       stats.bestTimedScore[key] = game.score;
     }
 
@@ -356,9 +366,29 @@
       } else if(w.length === stats.longest.len && stats.longest.words.indexOf(w) === -1){
         stats.longest.words.push(w);
       }
-      if(w.length >= 6 && w.length <= 11) stats.longFinds.range6to11++;
-      if(w.length >= 8 && w.length <= 11) stats.longFinds.range8to11++;
+      // Long-word achievements: distinct words only, timed rounds only.
+      if(timed && w.length >= 6 && w.length <= 11){
+        stats.longWords[String(w.length)][w] = true;
+      }
     });
+
+    // Percent-of-board-potential badges are the one exception to "timed only" —
+    // counted every round, infinite included, per explicit instruction. Once a
+    // tier flips true it never resets, even if a later round scores lower.
+    var potential = 0;
+    game.sol.forEach(function(v, w){ potential += scoreOf(w); });
+    if(potential > 0){
+      var pct = game.score / potential;
+      if(pct >= 0.25) stats.pctBadges.p25 = true;
+      if(pct >= 0.50) stats.pctBadges.p50 = true;
+      if(pct >= 0.75) stats.pctBadges.p75 = true;
+    }
+
+    // The hard one: every word the solver found, you also found. Timed only.
+    if(timed && game.sol.size > 0 && game.found.size === game.sol.size){
+      stats.fullBoard = true;
+    }
+
     saveStats(stats);
   }
 
@@ -850,8 +880,13 @@
     fillEl.classList.remove("low");
     fillEl.style.width = "100%";
     renderFound();
+    // UI rule going forward: while a round is running, Quit is the ONLY
+    // button/tab visible anywhere on the page unless explicitly told otherwise.
+    // Any new mid-round-hidden control should be added to all three spots
+    // this pattern appears (here, startGame(), and endGame()).
     quitBtn.hidden = true;
     statsOpen.hidden = false;
+    achOpen.hidden = false;
     foundSection.hidden = true;
     results.hidden = true;
     missedChips.innerHTML = "";
@@ -868,6 +903,7 @@
     boardEl.classList.remove("masked");
     quitBtn.hidden = false;
     statsOpen.hidden = true;
+    achOpen.hidden = true;
     foundSection.hidden = true;
     if(game.timer) clearInterval(game.timer);
     game.timer = setInterval(function(){
@@ -892,6 +928,7 @@
     game.dragging = false;
     quitBtn.hidden = true;
     statsOpen.hidden = false;
+    achOpen.hidden = false;
     foundSection.hidden = false;   // the round is over, so revealing it is safe
     game.path = [];
     refreshSelection();
@@ -1126,15 +1163,57 @@
     6: [45000, 50000, 55000]
   };
 
+  var NUM_WORD = { 6:"Six", 7:"Seven", 8:"Eight", 9:"Nine", 10:"Ten", 11:"Eleven" };
+
+  function distinctCount(s, len){
+    var bucket = s.longWords[String(len)];
+    return bucket ? Object.keys(bucket).length : 0;
+  }
+
   var ACHIEVEMENTS = (function(){
-    var list = [
-      { cat: "Long Words", label: "Find a 6\u201311 letter word",
-        check: function(s){ return (s.longFinds.range6to11 || 0) >= 1; } },
-      { cat: "Long Words", label: "Find 5 words, 8\u201311 letters",
-        check: function(s){ return (s.longFinds.range8to11 || 0) >= 5; } },
-      { cat: "Long Words", label: "Find 10 words, 8\u201311 letters",
-        check: function(s){ return (s.longFinds.range8to11 || 0) >= 10; } }
-    ];
+    var list = [];
+
+    // One achievement per exact length, 6 through 11 — not a 6-11 range lump.
+    [6, 7, 8, 9, 10, 11].forEach(function(len){
+      list.push({
+        cat: "Long Words",
+        label: "Find a " + NUM_WORD[len] + "-letter word",
+        check: function(s){ return distinctCount(s, len) >= 1; }
+      });
+    });
+
+    // "Find 5" and "find 10", each split per length 8-11 rather than lumped.
+    [8, 9, 10, 11].forEach(function(len){
+      list.push({
+        cat: "Long Words",
+        label: "Find 5 distinct " + NUM_WORD[len].toLowerCase() + "-letter words",
+        check: function(s){ return distinctCount(s, len) >= 5; }
+      });
+    });
+    [8, 9, 10, 11].forEach(function(len){
+      list.push({
+        cat: "Long Words",
+        label: "Find 10 distinct " + NUM_WORD[len].toLowerCase() + "-letter words",
+        check: function(s){ return distinctCount(s, len) >= 10; }
+      });
+    });
+
+    // Board Mastery: how much of a single board's total possible score you
+    // actually captured in one round. The 25/50/75% tiers are the one
+    // exception in this whole list that also counts infinite-mode rounds.
+    [[25,"p25"], [50,"p50"], [75,"p75"]].forEach(function(pair){
+      list.push({
+        cat: "Board Mastery",
+        label: "Score " + pair[0] + "% of a board's total possible points",
+        check: function(s){ return !!s.pctBadges[pair[1]]; }
+      });
+    });
+    list.push({
+      cat: "Board Mastery",
+      label: "Find every single word on a board (100%)",
+      check: function(s){ return !!s.fullBoard; }
+    });
+
     [3, 4, 5, 6].forEach(function(size){
       HS_TIERS[size].forEach(function(threshold){
         list.push({
@@ -1144,6 +1223,7 @@
         });
       });
     });
+
     return list;
   })();
 
@@ -1185,10 +1265,14 @@
   statsReset.addEventListener("click", function(){
     stats = {
       best: {}, longest: { len: 0, words: [] }, games: 0,
-      bestTimedScore: {}, longFinds: { range6to11: 0, range8to11: 0 }
+      bestTimedScore: {},
+      longWords: { "6":{}, "7":{}, "8":{}, "9":{}, "10":{}, "11":{} },
+      pctBadges: { p25: false, p50: false, p75: false },
+      fullBoard: false
     };
     saveStats(stats);
     renderStats();
+    if(!achOverlay.hidden) renderAchievements();
   });
 
   sizeSeg.addEventListener("click", function(e){
