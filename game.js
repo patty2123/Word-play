@@ -263,6 +263,7 @@
   var achOpen = $("ach-open"), achBtnReady = $("ach-btn-ready"), achCloseX = $("ach-close-x");
   var achToast = $("ach-toast"), achToastLabel = $("ach-toast-label");
   var missedChips = $("missed-chips"), showAllBtn = $("show-all-btn"), againBtn = $("again-btn");
+  var collapseMissedBtn = $("collapse-missed-btn");
 
   var tiles = [];
 
@@ -961,18 +962,26 @@
     $("final-words").textContent = String(game.found.size);
     $("final-total").textContent = String(game.sol.size);
 
-    renderMissed(missedCommon.slice(0, 40), true);
-    showAllBtn.onclick = function(){
+    // Shared by the bottom toggle button and the top minimize shortcut, so a
+    // long "show all" list (up to 300 words) can be collapsed from the top
+    // without scrolling past every chip to reach it at the bottom.
+    function toggleMissed(){
       if(showAllBtn.dataset.expanded){
         renderMissed(missedCommon.slice(0, 40), true);
         showAllBtn.textContent = "Show all missed words";
         showAllBtn.dataset.expanded = "";
+        collapseMissedBtn.hidden = true;
       } else {
         renderMissed(missedAll.slice(0, 300), false);
         showAllBtn.textContent = "Show common words only";
         showAllBtn.dataset.expanded = "1";
+        collapseMissedBtn.hidden = false;
       }
-    };
+    }
+    renderMissed(missedCommon.slice(0, 40), true);
+    collapseMissedBtn.hidden = true;   // reset each round — starts collapsed
+    showAllBtn.onclick = toggleMissed;
+    collapseMissedBtn.onclick = toggleMissed;
 
     results.hidden = false;
     results.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1106,20 +1115,30 @@
     });
   }
 
-  defClose.addEventListener("click", function(){
+  function closeDef(){
     defOverlay.hidden = true;
     syncScrollLock();
-  });
+  }
+  defClose.addEventListener("click", closeDef);
 
   statsOpen.addEventListener("click", openStats);
   statsCloseX.addEventListener("click", closeStats);
 
   // Closing the ready screen without playing, so the last board stays reviewable.
-  readyClose.addEventListener("click", function(){
+  function closeReady(){
     overlay.hidden = true;
     boardEl.classList.remove("masked");
     syncScrollLock();
-  });
+  }
+  readyClose.addEventListener("click", closeReady);
+
+  // Tapping the dark backdrop closes whichever overlay it belongs to, same as
+  // hitting its X — matches the pattern achievements already used. Checking
+  // e.target === the overlay itself (not a descendant) is what stops a tap
+  // inside the card from also closing it.
+  overlay.addEventListener("click", function(e){ if(e.target === overlay) closeReady(); });
+  statsOverlay.addEventListener("click", function(e){ if(e.target === statsOverlay) closeStats(); });
+  defOverlay.addEventListener("click", function(e){ if(e.target === defOverlay) closeDef(); });
 
   function renderStats(){
     var rows = [3, 4, 5, 6].map(function(n){
@@ -1139,7 +1158,7 @@
     if(words.length > 1){
       rows.push('<div class="stat-more" id="tie-list" hidden>' +
         words.slice().reverse().map(function(w){
-          return '<span class="chip">' + w.toUpperCase() + '</span>';
+          return '<button type="button" class="chip" data-word="' + w + '">' + w.toUpperCase() + '</button>';
         }).join("") + '</div>');
     }
 
@@ -1155,6 +1174,10 @@
         toggle.textContent = list.hidden
           ? "+" + (words.length - 1) + " more this long"
           : "hide";
+      });
+      // Every word bubble opens its definition, same as everywhere else.
+      list.querySelectorAll(".chip[data-word]").forEach(function(chip){
+        chip.addEventListener("click", function(){ showDefinition(chip.dataset.word); });
       });
     }
   }
@@ -1280,9 +1303,9 @@
 
           if(found.length){
             html += '<button type="button" class="ach-progress" data-target="' + listId + '">' +
-              shown + ' of ' + target + '</button>';
+              shown + '/' + target + '</button>';
           } else {
-            html += '<span class="ach-progress" disabled>' + shown + ' of ' + target + '</span>';
+            html += '<span class="ach-progress" disabled>' + shown + '/' + target + '</span>';
           }
         }
 
@@ -1290,7 +1313,7 @@
 
         if(a.wordLen && found.length){
           html += '<div class="ach-words" id="' + listId + '" hidden>' +
-            found.map(function(w){ return '<span class="chip">' + w.toUpperCase() + '</span>'; }).join("") +
+            found.map(function(w){ return '<button type="button" class="chip" data-word="' + w + '">' + w.toUpperCase() + '</button>'; }).join("") +
             '</div>';
         }
 
@@ -1306,6 +1329,13 @@
         if(!target) return;
         target.hidden = !target.hidden;
         btn.classList.toggle("open", !target.hidden);
+      });
+    });
+
+    achList.querySelectorAll(".chip[data-word]").forEach(function(chip){
+      chip.addEventListener("click", function(e){
+        e.stopPropagation();
+        showDefinition(chip.dataset.word);
       });
     });
   }

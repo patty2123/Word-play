@@ -87,7 +87,11 @@
 
     <div class="res-block">
       <h3>Common words you missed</h3>
-      <p class="hint">Tap any word to trace it on the board.</p>
+      <div class="res-hint-row">
+        <p class="hint">Tap any word to trace it on the board.</p>
+        <button class="collapse-btn" id="collapse-missed-btn" type="button" hidden
+          aria-label="Collapse missed words list">&#8722;</button>
+      </div>
       <div class="chips" id="missed-chips"></div>
       <button class="btn ghost" id="show-all-btn" type="button">Show all missed words</button>
     </div>

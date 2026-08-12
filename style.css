@@ -645,3 +645,35 @@ body.modal-open{ overflow:hidden; }
 }
 
 .ach-row.done .ach-words{ border-top-color:rgba(61,214,140,0.3); }
+
+
+/* ---------- missed-words minimize shortcut ---------- */
+
+.res-hint-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+}
+
+.res-hint-row .hint{ margin:0; }
+
+.collapse-btn{
+  flex-shrink:0;
+  width:26px;
+  height:26px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:8px;
+  border:1px solid var(--edge);
+  background:var(--panel-2);
+  color:var(--ink-dim);
+  font-size:15px;
+  line-height:1;
+  cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+}
+
+.collapse-btn:hover{ color:var(--ink); border-color:var(--accent); }
+.collapse-btn[hidden]{ display:none; }
