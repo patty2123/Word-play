@@ -10,6 +10,89 @@
   // How long the word bubble lingers, and how long it takes to fade out.
   // FADE_MS is mirrored into CSS as --flash-fade.
   var FLASH_HOLD_MS = 420, FADE_MS = 300;
+
+  /* ------------------------------------------------------------------
+     SWIPE FEEL — the knobs worth touching.
+
+     Selection is directional: what matters is the direction the finger is
+     travelling away from the current tile's centre, not which tile it happens
+     to be closest to. Proximity alone punishes diagonals, because a curved
+     swipe bulges toward an orthogonal neighbour and gets captured by it even
+     when you're clearly heading for the diagonal.
+     ------------------------------------------------------------------ */
+  var SWIPE = {
+    // How far the finger must travel from the current tile's centre before its
+    // direction is trusted, as a fraction of tile spacing. Raise if jitter near
+    // a centre causes false moves; lower if it feels sluggish.
+    minTravel: 0.30,
+
+    // Degrees each diagonal sector gains over each orthogonal one.
+    //   0  -> eight equal 45° sectors
+    //   10 -> 50° diagonals, 40° orthogonals  (a good starting point)
+    // Past about 20 the orthogonals get squeezed too hard to hit reliably.
+    diagonalForgiveness: 10,
+
+    // Per-direction widths in degrees, for when one direction specifically
+    // needs help, e.g. { NE: 56, SW: 56 }. Anything named here is honoured
+    // exactly and the remaining directions absorb the difference, so the eight
+    // always total 360.
+    sectorOverrides: {},
+
+    // Distance between resampled points along a fast swipe, as a fraction of
+    // tile spacing. Smaller catches quicker flicks at slightly more CPU.
+    sampleSpacing: 0.10
+  };
+
+  // Screen coordinates run y-downward, so 90° is South, not North.
+  var DIR_ORDER  = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"];
+  var DIR_DELTA  = {
+    E:  [ 0,  1], SE: [ 1,  1], S:  [ 1,  0], SW: [ 1, -1],
+    W:  [ 0, -1], NW: [-1, -1], N:  [-1,  0], NE: [-1,  1]
+  };
+  var IS_DIAGONAL = { NE:1, SE:1, SW:1, NW:1 };
+
+  var SECTORS = [];
+
+  /* Lays the eight sectors contiguously around the circle. Widths differ, so
+     boundaries can't be assumed at the 22.5° marks — they're accumulated. */
+  function buildSectors(){
+    var f = SWIPE.diagonalForgiveness;
+    var base = {};
+    DIR_ORDER.forEach(function(d){
+      base[d] = IS_DIAGONAL[d] ? 45 + f / 2 : 45 - f / 2;
+    });
+
+    // Honour overrides exactly, then rescale the rest back to a 360 total.
+    var ov = SWIPE.sectorOverrides || {};
+    var fixedSum = 0, freeSum = 0;
+    DIR_ORDER.forEach(function(d){
+      if(ov[d] != null) fixedSum += ov[d];
+      else freeSum += base[d];
+    });
+    var scale = freeSum > 0 ? (360 - fixedSum) / freeSum : 1;
+
+    var widths = {};
+    DIR_ORDER.forEach(function(d){
+      widths[d] = ov[d] != null ? ov[d] : base[d] * scale;
+    });
+
+    SECTORS = [];
+    var start = -widths[DIR_ORDER[0]] / 2;   // first direction straddles 0°
+    DIR_ORDER.forEach(function(d){
+      SECTORS.push({ dir: d, from: (start + 360) % 360, width: widths[d] });
+      start += widths[d];
+    });
+  }
+
+  function directionFromAngle(deg){
+    var a = ((deg % 360) + 360) % 360;
+    for(var i = 0; i < SECTORS.length; i++){
+      var s = SECTORS[i];
+      var rel = ((a - s.from) % 360 + 360) % 360;
+      if(rel < s.width) return s.dir;
+    }
+    return null;   // unreachable while the widths total 360
+  }
   var SCORE_BY_LEN = { 3:100, 4:400, 5:800, 6:1400, 7:1800, 8:2200, 9:2600 };
   function scoreOf(w){ return w.length >= 10 ? 3000 : (SCORE_BY_LEN[w.length] || 0); }
 
@@ -418,21 +501,20 @@
      the trail stays aligned at any board size without measuring the DOM:
      SIZE tiles plus SIZE-1 gaps fill the 100 units. */
   var GAPS = { 3: 3.2, 4: 3.2, 5: 3.2, 6: 2.0 };
-  var GAP = 3.2, STEP = 0, OFF = 0, HYSTERESIS = 0, SAMPLE_STEP = 0;
+  var GAP = 3.2, STEP = 0, OFF = 0, MIN_TRAVEL = 0, SAMPLE_STEP = 0;
 
   function computeGeometry(){
     GAP = GAPS[SIZE];
     var tile = (100 - GAP * (SIZE - 1)) / SIZE;
     OFF = tile / 2;
     STEP = tile + GAP;
-    // Stops the selection flickering while a finger sits on a tile boundary.
-    HYSTERESIS = STEP * 0.12;
+    MIN_TRAVEL = STEP * SWIPE.minTravel;
+    // Fast flicks arrive as sparse pointermove events; the gap between them is
+    // resampled at this spacing so a quick diagonal can't skip a tile.
+    SAMPLE_STEP = STEP * SWIPE.sampleSpacing;
     // Trail thickness tracks tile size, so it reads the same on every board
     // instead of thickening as the grid gets denser.
     trailLine.setAttribute("stroke-width", (tile * 0.14).toFixed(2));
-    // Fast flicks arrive as sparse pointermove events; the gap between them is
-    // resampled at this spacing so a quick diagonal can't skip a tile.
-    SAMPLE_STEP = STEP * 0.25;
   }
 
   function centerOf(i){
@@ -498,12 +580,14 @@
     renderTrail(game.path);
   }
 
-  /* Selection is nearest-centre, not shape-based. The previous octagonal
-     hitboxes fixed diagonal swipes but created dead zones, so tapping a tile's
-     outer corner to START a word registered nothing. Nearest-centre has no dead
-     zones at all: on touch-down the closest tile always wins, and during a drag
-     only the current tile's 8 neighbours are even considered, so a diagonal
-     can't be stolen by an orthogonal neighbour. */
+  /* Direction decides the next tile, distance only decides the first one.
+
+     The start tile is whatever is nearest the touch, so corners and gutters
+     always begin a word. After that, each step asks which of the eight
+     compass directions the finger is travelling from the current tile's
+     centre, and takes that neighbour. Proximity is never consulted again,
+     which is what stops a curved diagonal swipe being stolen by the
+     orthogonal neighbour it happens to pass nearer to. */
 
   function pointToBoard(x, y){
     var r = boardEl.getBoundingClientRect();
@@ -528,22 +612,36 @@
     for(var i = 0; i < CELLS; i++) ALL_CELLS.push(i);
   }
 
+  function neighborInDirection(i, dir){
+    var d = DIR_DELTA[dir];
+    if(!d) return -1;
+    var r = Math.floor(i / SIZE) + d[0];
+    var c = (i % SIZE) + d[1];
+    if(r < 0 || r >= SIZE || c < 0 || c >= SIZE) return -1;
+    return r * SIZE + c;
+  }
+
   // Advances the path by at most one tile for a single sampled point.
   function advanceTo(px, py){
     var cur = game.path[game.path.length - 1];
-    var next = nearestOf(px, py, NEIGHBORS[cur]);
-    if(next.index < 0) return;
-
     var c = centerOf(cur);
-    var curDist = Math.sqrt((px - c.x) * (px - c.x) + (py - c.y) * (py - c.y));
-    // Must be meaningfully past the boundary, not merely closer.
-    if(next.dist > curDist - HYSTERESIS) return;
+    var dx = px - c.x, dy = py - c.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
 
-    // Already used this drag: ignore it. This is what makes the path additive —
-    // sliding back over an earlier tile does nothing rather than rewinding.
-    if(game.path.indexOf(next.index) !== -1) return;
+    // Too near the centre for the heading to mean anything yet.
+    if(dist < MIN_TRAVEL) return;
 
-    game.path.push(next.index);
+    var dir = directionFromAngle(Math.atan2(dy, dx) * 180 / Math.PI);
+    if(!dir) return;
+
+    var next = neighborInDirection(cur, dir);
+    if(next < 0) return;                          // board edge
+    if(next === cur) return;
+    // Already used this drag, so ignore it. The path only ever grows; sliding
+    // back over an earlier tile does nothing rather than rewinding.
+    if(game.path.indexOf(next) !== -1) return;
+
+    game.path.push(next);
     selectTick(game.path.length);
     refreshSelection();
   }
@@ -1075,6 +1173,8 @@
   });
 
   // ---------- boot ----------
+
+  buildSectors();
 
   // Single source of truth for the fade: JS owns the number, CSS reads it.
   document.documentElement.style.setProperty("--flash-fade", (FADE_MS / 1000) + "s");
