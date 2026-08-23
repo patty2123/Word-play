@@ -145,17 +145,37 @@
 
   var NEIGHBORS = buildNeighbors(SIZE);
 
+  /* Board generation reads from `rng`, not Math.random() directly. Solo play
+     leaves it as Math.random — genuinely random, matches every prior build.
+     Challenge boards swap it for a seeded generator (mulberry32) before
+     calling makeGoodBoard(), so two different devices replaying the identical
+     seed make the identical sequence of shuffle/retry decisions and land on
+     the exact same accepted board. This is the whole mechanism that makes a
+     duel fair without ever sending board *contents* over the network — only
+     the seed number needs to travel, both sides regenerate the rest. */
+  var rng = Math.random;
+
+  function mulberry32(seed){
+    var a = seed >>> 0;
+    return function(){
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
   function rollBoard(){
     var d = DICE.slice(), cells = [];
     for(var i = d.length - 1; i > 0; i--){
-      var j = Math.floor(Math.random() * (i + 1));
+      var j = Math.floor(rng() * (i + 1));
       var t = d[i]; d[i] = d[j]; d[j] = t;
     }
     for(var k = 0; k < CELLS; k++){
       // Every tile is a single letter, Q included — no combined "Qu" tile.
       // That makes Q genuinely hard (QUIT needs a U sitting next to it), which
       // is the intended trade.
-      cells.push(d[k].charAt(Math.floor(Math.random() * 6)));
+      cells.push(d[k].charAt(Math.floor(rng() * 6)));
     }
     return cells;
   }
@@ -257,6 +277,7 @@
   var statsBtn = $("stats-btn"), statsOverlay = $("stats-overlay");
   var statTable = $("stat-table"), statsClose = $("stats-close"), statsReset = $("stats-reset");
   var statsOpen = $("stats-open"), statsCloseX = $("stats-close-x"), readyClose = $("ready-close");
+  var challengeOpen = $("challenge-open");
   var defOverlay = $("def-overlay"), defWord = $("def-word"), defBody = $("def-body"), defClose = $("def-close");
   var potentialEl = $("board-potential");
   var achOverlay = $("ach-overlay"), achList = $("ach-list");
@@ -536,7 +557,8 @@
   var game = {
     cells: [], sol: null, path: [], dragging: false,
     found: new Map(), score: 0, duration: 45, left: 45,
-    timer: null, running: false
+    timer: null, running: false,
+    mode: "solo", seed: null, challengeId: null
   };
 
   function fmtTime(s){
@@ -862,7 +884,16 @@
     game.duration = Number(b.dataset.sec);
   });
 
-  function newGame(){
+  // seed/mode/challengeId are only ever passed by the challenges module.
+  // Every existing call site (size picker, Start, boot) calls newGame() with
+  // no arguments, which is exactly what keeps solo play genuinely random —
+  // mode defaults to "solo" and rng stays Math.random.
+  function newGame(seed, mode, challengeId){
+    rng = (seed != null) ? mulberry32(seed) : Math.random;
+    game.mode = mode || "solo";
+    game.seed = (seed != null) ? seed : null;
+    game.challengeId = challengeId || null;
+
     var board = makeGoodBoard();
     game.cells = board.cells;
     game.sol = board.sol;
@@ -889,6 +920,7 @@
     quitBtn.hidden = true;
     statsOpen.hidden = false;
     achOpen.hidden = false;
+    challengeOpen.hidden = false;
     foundSection.hidden = true;
     results.hidden = true;
     missedChips.innerHTML = "";
@@ -906,6 +938,7 @@
     quitBtn.hidden = false;
     statsOpen.hidden = true;
     achOpen.hidden = true;
+    challengeOpen.hidden = true;
     foundSection.hidden = true;
     if(game.timer) clearInterval(game.timer);
     game.timer = setInterval(function(){
@@ -931,6 +964,7 @@
     quitBtn.hidden = true;
     statsOpen.hidden = false;
     achOpen.hidden = false;
+    challengeOpen.hidden = false;
     foundSection.hidden = false;   // the round is over, so revealing it is safe
     game.path = [];
     refreshSelection();
@@ -957,6 +991,23 @@
     var potential = 0;
     game.sol.forEach(function(v, w){ potential += scoreOf(w); });
     potentialEl.textContent = "of " + potential.toLocaleString() + " possible";
+
+    // Challenge rounds still run every normal stat/achievement check above —
+    // no reason a duel shouldn't count toward your own progress too. This is
+    // strictly an extra step: hand the outcome to the challenges module,
+    // which owns everything Supabase-related. game.js has no idea what
+    // Supabase is, on purpose — this is the only line that knows the module
+    // exists at all, and it's a no-op for every normal solo round.
+    if(game.mode !== "solo" && window.WordHuntChallenges){
+      window.WordHuntChallenges.submitResult({
+        mode: game.mode,
+        challengeId: game.challengeId,
+        seed: game.seed,
+        score: game.score,
+        potential: potential,
+        words: Array.from(game.found.keys())
+      });
+    }
 
     $("final-score").textContent = game.score.toLocaleString();
     $("final-words").textContent = String(game.found.size);
@@ -1464,15 +1515,69 @@
   setBoardSize(SIZE);
   syncScrollLock();   // the ready overlay is open on load
 
+  var dictReady = false;
+
   setTimeout(function(){
     var d = decodeDict(window.WORDHUNT_DICT);
     WORDS = d.words;
     COMMON = d.common;
     MASKS = buildMasks();
     window.WORDHUNT_DICT = null;   // release the raw string
+    dictReady = true;
     newGame();
     startBtn.disabled = false;
     startBtn.textContent = "Start";
   }, 30);
+
+  /* Public surface for the challenges module — the only door into this
+     closure from outside. game.js has no idea Supabase exists; it just
+     exposes "start a round on this exact seed" and "tell me when a challenge
+     round finishes" (the endGame() hook above). Everything about creating,
+     listing, or submitting challenges lives entirely in challenges.js. */
+  window.WordHuntGame = {
+    isReady: function(){ return dictReady; },
+
+    // Forces 5x5/90s regardless of whatever the player last had selected —
+    // every challenge board is that size/duration, by design (see spec).
+    startSeeded: function(seed, mode, challengeId){
+      if(!dictReady) return false;
+      setBoardSize(5);
+      game.duration = 90;
+      Array.prototype.forEach.call(durSeg.children, function(c){
+        c.classList.toggle("on", c.dataset.sec === "90");
+      });
+      unlockAudio();
+      newGame(seed, mode, challengeId);
+      startGame();
+      return true;
+    },
+
+    // So the challenges panel can show "trace this word" against a
+    // completed duel's board without needing its own copy of the solver —
+    // it just asks game.js to regenerate the identical board from the seed
+    // and hand back the same path data traceWord() already knows how to use.
+    //
+    // Deliberately does NOT call setBoardSize(): that rebuilds the on-screen
+    // tile grid and the hit-testing geometry for whatever board is currently
+    // live, which would corrupt an in-progress round just from someone
+    // browsing challenge history in the background. This only touches the
+    // handful of module vars the solver itself reads, and puts them back
+    // exactly as found — a pure computation with no visible side effect.
+    solveSeed: function(seed){
+      var savedRng = rng, savedSize = SIZE, savedCells = CELLS,
+          savedDice = DICE, savedGate = GATE, savedNeighbors = NEIGHBORS;
+
+      rng = mulberry32(seed);
+      SIZE = 5; CELLS = 25; DICE = DICE_SETS[5]; GATE = GATES[5];
+      NEIGHBORS = buildNeighbors(5);
+
+      var board = makeGoodBoard();   // { cells, sol } — sol.get(w).path is tile indices
+
+      rng = savedRng; SIZE = savedSize; CELLS = savedCells;
+      DICE = savedDice; GATE = savedGate; NEIGHBORS = savedNeighbors;
+
+      return board;
+    }
+  };
 
 })();

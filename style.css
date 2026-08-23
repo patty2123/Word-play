@@ -367,7 +367,7 @@ body{
 
 /* Locks the page behind a modal so the board can't be scrolled away while the
    ready screen is up. */
-body.modal-open{ overflow:hidden; }
+body.modal-open, body.chal-modal-open{ overflow:hidden; }
 
 .card{ position:relative; }
 
@@ -677,3 +677,30 @@ body.modal-open{ overflow:hidden; }
 
 .collapse-btn:hover{ color:var(--ink); border-color:var(--accent); }
 .collapse-btn[hidden]{ display:none; }
+
+
+/* ---------- challenges ---------- */
+
+.challenge-row .ach-progress{ cursor:default; }
+
+/* Read-only board used to review a challenge's letters + a traced word's
+   path. Same tile/board visual language as the live game, but static — no
+   pointer handlers, no masking, no timer tied to it. */
+.static-board{
+  pointer-events:none;
+  margin-bottom:14px;
+}
+
+.static-board .tile.trace{
+  background:var(--accent);
+  color:#2b1d00;
+  box-shadow:0 3px 0 var(--accent-edge);
+}
+
+.static-trail-line{
+  fill:none;
+  stroke:var(--accent);
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  opacity:0.85;
+}

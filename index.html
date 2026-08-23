@@ -72,6 +72,7 @@
   <button class="btn ghost quit-btn" id="quit-btn" type="button" hidden>Quit round</button>
   <button class="btn ghost quit-btn" id="stats-open" type="button">Stats</button>
   <button class="btn ghost quit-btn" id="ach-open" type="button">Achievements</button>
+  <button class="btn ghost quit-btn" id="challenge-open" type="button">Challenges</button>
 
   <button class="update-banner" id="update-banner" type="button" hidden>
     Update available — tap to reload
@@ -119,6 +120,7 @@
       <button type="button" data-size="6">6×6</button>
     </div>
     <button class="btn" id="start-btn" type="button" disabled>Loading dictionary…</button>
+    <button class="btn ghost sound-btn" id="challenge-btn-ready" type="button">Challenges</button>
     <button class="btn ghost sound-btn" id="sound-btn" type="button" aria-pressed="true">Sound on</button>
     <button class="btn ghost sound-btn" id="stats-btn" type="button">Stats</button>
     <button class="btn ghost sound-btn" id="ach-btn-ready" type="button">Achievements</button>
@@ -152,9 +154,28 @@
   </div>
 </div>
 
+<div class="overlay" id="challenge-overlay" hidden>
+  <div class="card ach-card">
+    <button class="close-x" id="challenge-close-x" type="button" aria-label="Close">×</button>
+    <h1>Challenges</h1>
+    <p class="hint" id="challenge-status"></p>
+    <button class="btn" id="challenge-new-btn" type="button">New challenge (5×5, 1:30)</button>
+    <div class="ach-list" id="challenge-list"></div>
+  </div>
+</div>
+
+<div class="overlay" id="challenge-detail-overlay" hidden>
+  <div class="card ach-card">
+    <button class="close-x" id="challenge-detail-close" type="button" aria-label="Close">×</button>
+    <h1>Challenge result</h1>
+    <div id="challenge-detail-body"></div>
+  </div>
+</div>
+
 <script src="build-info.js"></script>
 <script src="dict.js"></script>
 <script src="game.js"></script>
+<script src="challenges.js"></script>
 <script>
   var stamp = document.getElementById("build-stamp");
   if (stamp) stamp.textContent = window.WORDHUNT_BUILD ? "build " + window.WORDHUNT_BUILD : "";
