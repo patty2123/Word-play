@@ -26,7 +26,7 @@
   // Supabase's actual security boundary is the RLS policies in schema.sql,
   // not secrecy of this key.
   var SUPABASE_URL = "https://kynpzrcezwsgpvdkahlh.supabase.co";
-  var SUPABASE_ANON_KEY = "REPLACE_WITH_ANON_KEY";
+  var SUPABASE_ANON_KEY = "sb_publishable_OwqxlN6gKjEX7_jt5cm4hg_OEgAgJkb";
 
   var SESSION_KEY = "wordhunt-supabase-session";
 
