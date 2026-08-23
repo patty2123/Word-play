@@ -136,6 +136,10 @@
   var REGISTERED_KEY = "wordhunt-player-registered";
   var myLabel = null;
 
+  // Set by playChallenge() right before a round starts; read by submitResult()
+  // to render the win/lose/draw banner without any extra network round trip.
+  var activeChallenge = null;
+
   function ensurePlayerRow(){
     if(prefGet(REGISTERED_KEY)){
       return rest("/players?id=eq." + session.user_id + "&select=label").then(function(rows){
@@ -171,6 +175,7 @@
   var $ = function(id){ return document.getElementById(id); };
   var chBtn, chOpen, chOverlay, chCloseX, chList, chNewBtn, chStatus;
   var chDetailOverlay, chDetailClose, chDetailBody;
+  var chBanner, chOppBlock, chOppHeading, chOppWords, chFoundHeading, chClearBtn;
 
   function ready(){
     chBtn = $("challenge-btn-ready");
@@ -183,6 +188,12 @@
     chDetailOverlay = $("challenge-detail-overlay");
     chDetailClose = $("challenge-detail-close");
     chDetailBody = $("challenge-detail-body");
+    chBanner = $("challenge-banner");
+    chOppBlock = $("challenge-opponent-block");
+    chOppHeading = $("challenge-opponent-heading");
+    chOppWords = $("challenge-opponent-words");
+    chFoundHeading = $("found-heading");
+    chClearBtn = $("challenge-clear-btn");
     wire();
   }
 
@@ -200,7 +211,7 @@
     chOverlay.hidden = false;
     syncChalLock();
     ensureSession().then(ensurePlayerRow).then(function(){
-      chStatus.textContent = myLabel ? ("Playing as " + myLabel) : "";
+      chStatus.textContent = myLabel || "";
       return flushPending();
     }).then(refreshList).catch(function(err){
       chStatus.textContent = "Couldn't connect — check your connection and reopen.";
@@ -238,6 +249,34 @@
       chOverlay.hidden = true;   // step out of the way, the round takes over the screen
       syncChalLock();
       window.WordHuntGame.startSeeded(seed, "challenge-create", null);
+    });
+
+    /* Deliberately broad for now: deletes every challenge the CURRENT
+       device is part of, as either creator or opponent — not scoped further
+       than that. This is a stopgap dev-cleanup tool, not a finished per-user
+       feature (a real version would need to not nuke a challenge the other
+       player still cares about). Fine while it's just Patrick's own two
+       devices testing against each other; worth narrowing before this is
+       used by an actual friend group. Needs the DELETE policy in
+       supabase/schema.sql to be applied — see the migration note there. */
+    chClearBtn.addEventListener("click", function(){
+      if(!confirm("Delete every challenge you're part of, on every device? This can't be undone.")) return;
+      chClearBtn.disabled = true;
+      chClearBtn.textContent = "Clearing…";
+      ensureSession().then(function(){
+        return rest("/challenges?or=(creator_id.eq." + session.user_id + ",opponent_id.eq." + session.user_id + ")", {
+          method: "DELETE",
+          prefer: "return=minimal"
+        });
+      }).then(function(){
+        return refreshList();
+      }).catch(function(err){
+        chStatus.textContent = "Couldn't clear challenges — check your connection and try again.";
+        console.error("Clear challenges failed:", err);
+      }).then(function(){
+        chClearBtn.disabled = false;
+        chClearBtn.textContent = "Clear all challenges";
+      });
     });
   }
 
@@ -279,7 +318,7 @@
       });
     }
 
-    html += '<h3 class="ach-cat">Challenges you sent <span class="ach-cat-count">' + myOwn.length + '</span></h3>';
+    html += '<h3 class="ach-cat">Your challenges <span class="ach-cat-count">' + myOwn.length + '</span></h3>';
     if(!myOwn.length){
       html += '<p class="empty-hint">You haven’t sent any challenges yet.</p>';
     } else {
@@ -302,7 +341,7 @@
       });
     }
 
-    html += '<h3 class="ach-cat">Challenges you played <span class="ach-cat-count">' + iPlayed.length + '</span></h3>';
+    html += '<h3 class="ach-cat">History <span class="ach-cat-count">' + iPlayed.length + '</span></h3>';
     if(!iPlayed.length){
       html += '<p class="empty-hint">You haven’t played anyone’s challenge yet.</p>';
     } else {
@@ -313,7 +352,7 @@
         else { icon = "🔵"; note = "Tied, " + c.opponent_score.toLocaleString() + " each"; }
         html += challengeRow({
           title: icon + " vs " + labelFor(c.creator_id, byId) + " — " + note,
-          potential: c.potential,
+          potentialLabel: c.opponent_score.toLocaleString() + " / " + c.potential.toLocaleString() + " pts",
           action: '<button type="button" class="btn ghost view-challenge-btn" data-id="' + c.id + '">View</button>'
         });
       });
@@ -323,7 +362,7 @@
     var byIdRef = byId;
 
     chList.querySelectorAll(".play-challenge-btn").forEach(function(btn){
-      btn.addEventListener("click", function(){ playChallenge(btn.dataset.id, challenges); });
+      btn.addEventListener("click", function(){ playChallenge(btn.dataset.id, challenges, byIdRef); });
     });
     chList.querySelectorAll(".view-challenge-btn").forEach(function(btn){
       btn.addEventListener("click", function(){ viewChallenge(btn.dataset.id, challenges, byIdRef); });
@@ -341,13 +380,17 @@
 
   // ---- playing ----
 
-  function playChallenge(id, challenges){
+  function playChallenge(id, challenges, byId){
     var c = challenges.filter(function(x){ return x.id === id; })[0];
     if(!c) return;
     if(!window.WordHuntGame || !window.WordHuntGame.isReady()){
       chStatus.textContent = "Still loading the dictionary — try again in a second.";
       return;
     }
+    // Cached for the win/lose/draw banner at round end (see submitResult) --
+    // the comparison only needs data already in hand from this list fetch,
+    // so the banner can render instantly with no extra network round trip.
+    activeChallenge = { challenge: c, creatorLabel: labelFor(c.creator_id, byId) };
     chOverlay.hidden = true;
     syncChalLock();
     window.WordHuntGame.startSeeded(Number(c.seed), "challenge-play", c.id);
@@ -453,15 +496,58 @@
     return flushInFlight;
   }
 
+  /* Resets the round-start state of everything challenge-related — the
+     result banner, the opponent's word list, and the relabeled "your words"
+     heading. Called by game.js at the top of every newGame(), regardless of
+     mode, so a challenge-play round's leftover result never bleeds into the
+     next round (solo or otherwise). Content only ever gets filled back in by
+     showChallengeBanner() below, and only for a challenge-play round. */
+  function onRoundStart(mode){
+    activeChallenge = null;
+    if(chBanner){ chBanner.hidden = true; chBanner.className = "challenge-banner"; chBanner.textContent = ""; }
+    if(chOppBlock){ chOppBlock.hidden = true; }
+    if(chOppWords){ chOppWords.innerHTML = ""; }
+    if(chFoundHeading){ chFoundHeading.textContent = "Words found"; }
+  }
+
+  /* The banner is purely a comparison of two scores already in hand — mine,
+     just earned, and the creator's, cached in activeChallenge back when the
+     challenge list was fetched. It renders instantly and doesn't wait on
+     the network submission (see submitResult below) succeeding at all. */
+  function showChallengeResultBanner(result){
+    if(!activeChallenge || !chBanner) return;
+    var c = activeChallenge.challenge, theirLabel = activeChallenge.creatorLabel;
+    var mine = result.score, theirs = c.creator_score;
+
+    var kind, text;
+    if(mine > theirs){ kind = "win";  text = "🏆 You won, " + mine.toLocaleString() + "–" + theirs.toLocaleString(); }
+    else if(mine < theirs){ kind = "loss"; text = "❌ " + theirLabel + " won, " + theirs.toLocaleString() + "–" + mine.toLocaleString(); }
+    else { kind = "tie"; text = "🔵 Tied, " + mine.toLocaleString() + " each"; }
+
+    chBanner.className = "challenge-banner " + kind;
+    chBanner.textContent = text;
+    chBanner.hidden = false;
+
+    if(chFoundHeading) chFoundHeading.textContent = "Your words";
+
+    if(chOppBlock && chOppHeading && chOppWords){
+      chOppHeading.textContent = theirLabel + "’s words";
+      if(window.WordHuntGame && window.WordHuntGame.renderChipsInto){
+        window.WordHuntGame.renderChipsInto(chOppWords, c.creator_words || []);
+      }
+      chOppBlock.hidden = false;
+    }
+  }
+
   function submitResult(result){
+    if(result.mode === "challenge-play") showChallengeResultBanner(result);
+
     result._qid = newQueueId();
     var pending = loadPending();
     pending.push(result);
     savePending(pending);
     return flushPending();   // try immediately; if it fails, openChallenges() retries later
   }
-
-  // ---- detail / trace view ----
 
   // ---- detail / trace view ----
 
@@ -568,22 +654,29 @@
       '<div class="final-cell"><span class="k">Potential</span><span class="v">' + c.potential.toLocaleString() + '</span></div>';
     chDetailBody.appendChild(summary);
 
+    // Every viewer of a completed challenge is always one of its two
+    // players (the list only ever surfaces YOUR sent/played challenges, or
+    // OPEN ones from others that have no words to show yet) — so whichever
+    // side is the viewer's own always reads "Your words" rather than their
+    // own label.
+    var creatorHeading = (c.creator_id === session.user_id) ? "Your words" : labelFor(c.creator_id, byId) + "’s words";
     var h1 = document.createElement("h3");
     h1.className = "ach-cat";
-    h1.textContent = labelFor(c.creator_id, byId) + "’s words";
+    h1.textContent = creatorHeading;
     chDetailBody.appendChild(h1);
     chDetailBody.appendChild(wordChips(c.creator_words || [], board.sol, boardCtl));
 
     if(c.status === "completed"){
+      var opponentHeading = (c.opponent_id === session.user_id) ? "Your words" : labelFor(c.opponent_id, byId) + "’s words";
       var h2 = document.createElement("h3");
       h2.className = "ach-cat";
-      h2.textContent = labelFor(c.opponent_id, byId) + "’s words";
+      h2.textContent = opponentHeading;
       chDetailBody.appendChild(h2);
       chDetailBody.appendChild(wordChips(c.opponent_words || [], board.sol, boardCtl));
     }
   }
 
-  window.WordHuntChallenges = { submitResult: submitResult };
+  window.WordHuntChallenges = { submitResult: submitResult, onRoundStart: onRoundStart };
 
   if(document.readyState === "loading"){
     document.addEventListener("DOMContentLoaded", ready);

@@ -719,3 +719,35 @@ body.modal-open, body.chal-modal-open{ overflow:hidden; }
   stroke-linejoin:round;
   opacity:0.85;
 }
+
+
+/* ---------- challenge result banner (full-size end-of-round view) ---------- */
+
+.challenge-banner{
+  font-family:var(--rounded);
+  font-weight:800;
+  font-size:17px;
+  text-align:center;
+  padding:14px 16px;
+  border-radius:14px;
+}
+
+.challenge-banner[hidden]{ display:none; }
+
+.challenge-banner.win{
+  background:rgba(61,214,140,0.14);
+  border:1px solid rgba(61,214,140,0.4);
+  color:var(--valid);
+}
+
+.challenge-banner.loss{
+  background:rgba(242,85,90,0.14);
+  border:1px solid rgba(242,85,90,0.4);
+  color:var(--invalid);
+}
+
+.challenge-banner.tie{
+  background:rgba(90,169,230,0.14);
+  border:1px solid rgba(90,169,230,0.4);
+  color:var(--dupe);
+}

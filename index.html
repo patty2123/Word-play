@@ -61,7 +61,7 @@
 
   <div id="found-section" hidden>
     <div class="found-head">
-      <h2>Words found</h2>
+      <h2 id="found-heading">Words found</h2>
       <span class="found-count" id="found-count">0</span>
     </div>
     <div class="chips" id="found-chips">
@@ -79,11 +79,18 @@
   </button>
 
   <div id="results" hidden>
+    <div id="challenge-banner" class="challenge-banner" hidden></div>
+
     <div class="final-row">
       <div class="final-cell"><span class="k">Final score</span><span class="v" id="final-score">0</span>
         <span class="potential" id="board-potential"></span></div>
       <div class="final-cell"><span class="k">Words</span><span class="v" id="final-words">0</span></div>
       <div class="final-cell"><span class="k">On board</span><span class="v" id="final-total">0</span></div>
+    </div>
+
+    <div class="res-block" id="challenge-opponent-block" hidden>
+      <h3 id="challenge-opponent-heading">Their words</h3>
+      <div class="chips" id="challenge-opponent-words"></div>
     </div>
 
     <div class="res-block">
@@ -161,6 +168,7 @@
     <p class="hint" id="challenge-status"></p>
     <button class="btn" id="challenge-new-btn" type="button">New challenge (5×5, 1:30)</button>
     <div class="ach-list" id="challenge-list"></div>
+    <button class="btn ghost sound-btn" id="challenge-clear-btn" type="button">Clear all challenges</button>
   </div>
 </div>
 

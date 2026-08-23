@@ -894,6 +894,13 @@
     game.seed = (seed != null) ? seed : null;
     game.challengeId = challengeId || null;
 
+    // Symmetric to the submitResult() call in endGame() below — lets the
+    // challenges module reset its own UI (result banner, relabeled heading)
+    // at the start of every round, not just react at the end of one.
+    if(window.WordHuntChallenges && window.WordHuntChallenges.onRoundStart){
+      window.WordHuntChallenges.onRoundStart(game.mode);
+    }
+
     var board = makeGoodBoard();
     game.cells = board.cells;
     game.sol = board.sol;
@@ -1536,6 +1543,20 @@
      listing, or submitting challenges lives entirely in challenges.js. */
   window.WordHuntGame = {
     isReady: function(){ return dictReady; },
+
+    // Renders a list of words as the same trace-on-click, hold-to-define
+    // chips used everywhere else in the game (found words, missed words) --
+    // reused as-is for "the other player's words" in a challenge result,
+    // rather than building a second, separate word-chip implementation.
+    // Works because it's the SAME board: after a challenge round, game.sol
+    // already has full path data for every legal word on that board,
+    // including ones only the other player found.
+    renderChipsInto: function(container, words){
+      container.innerHTML = "";
+      words.slice().sort(byLengthThenAlpha).forEach(function(w){
+        container.appendChild(makeChip(w, scoreOf(w)));
+      });
+    },
 
     // Forces 5x5/90s regardless of whatever the player last had selected —
     // every challenge board is that size/duration, by design (see spec).
