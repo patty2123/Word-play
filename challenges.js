@@ -299,13 +299,25 @@
 
   function renderList(challenges, byId){
     var mine = session.user_id;
+
+    // Open Challenges: only ever other people's, per spec -- unchanged.
     var openFromOthers = challenges.filter(function(c){ return c.status === "open" && c.creator_id !== mine; });
-    var myOwn = challenges.filter(function(c){ return c.creator_id === mine; });
-    var iPlayed = challenges.filter(function(c){ return c.opponent_id === mine; });
+
+    // Your Challenges: ones YOU sent that are still waiting -- a completed
+    // one moves to History instead of staying here, regardless of role.
+    var myOpenSent = challenges.filter(function(c){ return c.status === "open" && c.creator_id === mine; });
+
+    // History: every completed challenge you're part of, whether you sent
+    // it or played it -- one unified list instead of two separate ones.
+    var history = challenges.filter(function(c){
+      return c.status === "completed" && (c.creator_id === mine || c.opponent_id === mine);
+    });
+    history.sort(function(a, b){ return new Date(b.completed_at) - new Date(a.completed_at); });
 
     var html = "";
 
-    html += '<h3 class="ach-cat">Open challenges <span class="ach-cat-count">' + openFromOthers.length + '</span></h3>';
+    // Always expanded -- this is the "things to do" list, not history.
+    html += '<h3 class="ach-cat">Open Challenges <span class="ach-cat-count">' + openFromOthers.length + '</span></h3>';
     if(!openFromOthers.length){
       html += '<p class="empty-hint">No open challenges from other players right now.</p>';
     } else {
@@ -318,45 +330,45 @@
       });
     }
 
-    html += '<h3 class="ach-cat">Your challenges <span class="ach-cat-count">' + myOwn.length + '</span></h3>';
-    if(!myOwn.length){
+    html += collapsibleHeader("your-challenges", "Your Challenges", myOpenSent.length);
+    if(!myOpenSent.length){
       html += '<p class="empty-hint">You haven’t sent any challenges yet.</p>';
     } else {
-      myOwn.forEach(function(c){
-        var icon = "⏳", note = "Waiting for someone to play…", clickable = false;
-        if(c.status === "completed"){
-          clickable = true;
-          if(c.opponent_score > c.creator_score){ icon = "❌"; note = labelFor(c.opponent_id, byId) + " won, " + c.opponent_score.toLocaleString() + "–" + c.creator_score.toLocaleString(); }
-          else if(c.opponent_score < c.creator_score){ icon = "🏆"; note = "You won, " + c.creator_score.toLocaleString() + "–" + c.opponent_score.toLocaleString(); }
-          else { icon = "🔵"; note = "Tied, " + c.creator_score.toLocaleString() + " each"; }
-        }
+      myOpenSent.forEach(function(c){
         html += challengeRow({
-          title: icon + " " + note,
-          // Your own score over the board's total possible, e.g. "1,200 / 12,400 pts" —
-          // only meaningful for challenges YOU created, since you have a score on
-          // them the moment you send one, unlike an open challenge from someone else.
+          title: "⏳ Waiting for someone to play…",
           potentialLabel: c.creator_score.toLocaleString() + " / " + c.potential.toLocaleString() + " pts",
-          action: clickable ? '<button type="button" class="btn ghost view-challenge-btn" data-id="' + c.id + '">View</button>' : ""
+          action: ""
         });
       });
     }
+    html += "</div>";
 
-    html += '<h3 class="ach-cat">History <span class="ach-cat-count">' + iPlayed.length + '</span></h3>';
-    if(!iPlayed.length){
-      html += '<p class="empty-hint">You haven’t played anyone’s challenge yet.</p>';
+    html += collapsibleHeader("history", "History", history.length);
+    if(!history.length){
+      html += '<p class="empty-hint">No completed challenges yet.</p>';
     } else {
-      iPlayed.forEach(function(c){
-        var icon, note;
-        if(c.opponent_score > c.creator_score){ icon = "🏆"; note = "You won, " + c.opponent_score.toLocaleString() + "–" + c.creator_score.toLocaleString(); }
-        else if(c.opponent_score < c.creator_score){ icon = "❌"; note = labelFor(c.creator_id, byId) + " won, " + c.creator_score.toLocaleString() + "–" + c.opponent_score.toLocaleString(); }
-        else { icon = "🔵"; note = "Tied, " + c.opponent_score.toLocaleString() + " each"; }
+      history.forEach(function(c){
+        // Works from whichever side YOU were on -- creator or opponent --
+        // rather than needing two near-identical row builders for each.
+        var wasCreator = c.creator_id === mine;
+        var myScore = wasCreator ? c.creator_score : c.opponent_score;
+        var theirScore = wasCreator ? c.opponent_score : c.creator_score;
+        var theirId = wasCreator ? c.opponent_id : c.creator_id;
+
+        var icon, verb;
+        if(myScore > theirScore){ icon = "🏆"; verb = "Victory"; }
+        else if(myScore < theirScore){ icon = "❌"; verb = "Defeat"; }
+        else { icon = "🔵"; verb = "Tie"; }
+
         html += challengeRow({
-          title: icon + " vs " + labelFor(c.creator_id, byId) + " — " + note,
-          potentialLabel: c.opponent_score.toLocaleString() + " / " + c.potential.toLocaleString() + " pts",
+          title: icon + " " + verb + " vs " + labelFor(theirId, byId),
+          potentialLabel: myScore.toLocaleString() + " / " + c.potential.toLocaleString() + " pts",
           action: '<button type="button" class="btn ghost view-challenge-btn" data-id="' + c.id + '">View</button>'
         });
       });
     }
+    html += "</div>";
 
     chList.innerHTML = html;
     var byIdRef = byId;
@@ -367,6 +379,24 @@
     chList.querySelectorAll(".view-challenge-btn").forEach(function(btn){
       btn.addEventListener("click", function(){ viewChallenge(btn.dataset.id, challenges, byIdRef); });
     });
+    chList.querySelectorAll(".ach-cat.collapsible").forEach(function(h){
+      h.addEventListener("click", function(){
+        var body = document.getElementById(h.dataset.target);
+        if(!body) return;
+        body.hidden = !body.hidden;
+        h.classList.toggle("open", !body.hidden);
+      });
+    });
+  }
+
+  // Collapsed by default every time the panel opens -- "so it only shows
+  // when you expand it," not something that remembers state across visits.
+  // Returns the opening tags only; each call site closes its own </div>
+  // right after finishing that section's rows, same as the plain sections do.
+  function collapsibleHeader(id, label, count){
+    return '<h3 class="ach-cat collapsible" data-target="' + id + '-body">' + label +
+      ' <span class="ach-cat-count">' + count + '</span></h3>' +
+      '<div class="collapsible-body" id="' + id + '-body" hidden>';
   }
 
   function challengeRow(opts){
@@ -387,13 +417,18 @@
       chStatus.textContent = "Still loading the dictionary — try again in a second.";
       return;
     }
-    // Cached for the win/lose/draw banner at round end (see submitResult) --
-    // the comparison only needs data already in hand from this list fetch,
-    // so the banner can render instantly with no extra network round trip.
-    activeChallenge = { challenge: c, creatorLabel: labelFor(c.creator_id, byId) };
     chOverlay.hidden = true;
     syncChalLock();
+    // startSeeded() runs newGame() synchronously, which calls onRoundStart()
+    // as its very first step -- and onRoundStart() clears activeChallenge.
+    // Setting activeChallenge BEFORE this call was the actual bug behind "no
+    // result banner, opponent's words blank": it got wiped out again before
+    // the round even began, so by the time the round ended there was nothing
+    // left for showChallengeResultBanner() to read. Setting it after is safe
+    // since startSeeded() has no async gap in it -- nothing runs in between
+    // that could touch activeChallenge itself.
     window.WordHuntGame.startSeeded(Number(c.seed), "challenge-play", c.id);
+    activeChallenge = { challenge: c, creatorLabel: labelFor(c.creator_id, byId) };
   }
 
   // ---- submission (called by game.js at end of a challenge round) ----
@@ -520,9 +555,9 @@
     var mine = result.score, theirs = c.creator_score;
 
     var kind, text;
-    if(mine > theirs){ kind = "win";  text = "🏆 You won, " + mine.toLocaleString() + "–" + theirs.toLocaleString(); }
-    else if(mine < theirs){ kind = "loss"; text = "❌ " + theirLabel + " won, " + theirs.toLocaleString() + "–" + mine.toLocaleString(); }
-    else { kind = "tie"; text = "🔵 Tied, " + mine.toLocaleString() + " each"; }
+    if(mine > theirs){ kind = "win";  text = "🏆 Victory: " + mine.toLocaleString(); }
+    else if(mine < theirs){ kind = "loss"; text = "❌ Defeat: " + mine.toLocaleString(); }
+    else { kind = "tie"; text = "🔵 Tie: " + mine.toLocaleString(); }
 
     chBanner.className = "challenge-banner " + kind;
     chBanner.textContent = text;
