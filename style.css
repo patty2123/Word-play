@@ -682,6 +682,10 @@ body.modal-open, body.chal-modal-open{ overflow:hidden; }
 /* ---------- challenges ---------- */
 
 .challenge-row .ach-progress{ cursor:default; }
+/* This badge is display-only here — it's the achievement panel's expandable
+   progress pill reused for "how many points is this board worth", not
+   something that opens or closes, so the dropdown caret doesn't belong. */
+.challenge-row .ach-progress::after{ content:none; }
 
 /* Read-only board used to review a challenge's letters + a traced word's
    path. Same tile/board visual language as the live game, but static — no
@@ -689,6 +693,17 @@ body.modal-open, body.chal-modal-open{ overflow:hidden; }
 .static-board{
   pointer-events:none;
   margin-bottom:14px;
+}
+
+/* Mirrors #trail's own positioning exactly (position:absolute; inset:0), just
+   under a class instead of an id since this SVG is created dynamically and
+   isn't the one live-game trail element that id refers to. */
+.static-trail-svg{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  pointer-events:none;
 }
 
 .static-board .tile.trace{

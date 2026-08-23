@@ -201,8 +201,8 @@
     syncChalLock();
     ensureSession().then(ensurePlayerRow).then(function(){
       chStatus.textContent = myLabel ? ("Playing as " + myLabel) : "";
-      refreshList();
-    }).catch(function(err){
+      return flushPending();
+    }).then(refreshList).catch(function(err){
       chStatus.textContent = "Couldn't connect — check your connection and reopen.";
     });
   }
@@ -236,6 +236,7 @@
       // somewhat weaker, though for a word game either would be plenty.
       var seed = (crypto.getRandomValues(new Uint32Array(1))[0]) >>> 0;
       chOverlay.hidden = true;   // step out of the way, the round takes over the screen
+      syncChalLock();
       window.WordHuntGame.startSeeded(seed, "challenge-create", null);
     });
   }
@@ -288,11 +289,14 @@
           clickable = true;
           if(c.opponent_score > c.creator_score){ icon = "❌"; note = labelFor(c.opponent_id, byId) + " won, " + c.opponent_score.toLocaleString() + "–" + c.creator_score.toLocaleString(); }
           else if(c.opponent_score < c.creator_score){ icon = "🏆"; note = "You won, " + c.creator_score.toLocaleString() + "–" + c.opponent_score.toLocaleString(); }
-          else { icon = "🤝"; note = "Tied, " + c.creator_score.toLocaleString() + " each"; }
+          else { icon = "🔵"; note = "Tied, " + c.creator_score.toLocaleString() + " each"; }
         }
         html += challengeRow({
           title: icon + " " + note,
-          potential: c.potential,
+          // Your own score over the board's total possible, e.g. "1,200 / 12,400 pts" —
+          // only meaningful for challenges YOU created, since you have a score on
+          // them the moment you send one, unlike an open challenge from someone else.
+          potentialLabel: c.creator_score.toLocaleString() + " / " + c.potential.toLocaleString() + " pts",
           action: clickable ? '<button type="button" class="btn ghost view-challenge-btn" data-id="' + c.id + '">View</button>' : ""
         });
       });
@@ -306,7 +310,7 @@
         var icon, note;
         if(c.opponent_score > c.creator_score){ icon = "🏆"; note = "You won, " + c.opponent_score.toLocaleString() + "–" + c.creator_score.toLocaleString(); }
         else if(c.opponent_score < c.creator_score){ icon = "❌"; note = labelFor(c.creator_id, byId) + " won, " + c.creator_score.toLocaleString() + "–" + c.opponent_score.toLocaleString(); }
-        else { icon = "🤝"; note = "Tied, " + c.opponent_score.toLocaleString() + " each"; }
+        else { icon = "🔵"; note = "Tied, " + c.opponent_score.toLocaleString() + " each"; }
         html += challengeRow({
           title: icon + " vs " + labelFor(c.creator_id, byId) + " — " + note,
           potential: c.potential,
@@ -327,9 +331,10 @@
   }
 
   function challengeRow(opts){
+    var badge = opts.potentialLabel || (opts.potential.toLocaleString() + " pts");
     return '<div class="ach-row challenge-row">' +
       '<span class="ach-label">' + opts.title + '</span>' +
-      '<span class="ach-progress" style="cursor:default">' + opts.potential.toLocaleString() + ' pts</span>' +
+      '<span class="ach-progress" style="cursor:default">' + badge + '</span>' +
       opts.action +
       '</div>';
   }
@@ -344,44 +349,119 @@
       return;
     }
     chOverlay.hidden = true;
+    syncChalLock();
     window.WordHuntGame.startSeeded(Number(c.seed), "challenge-play", c.id);
   }
 
   // ---- submission (called by game.js at end of a challenge round) ----
 
-  function submitResult(result){
-    ensureSession().then(function(){
-      if(result.mode === "challenge-create"){
-        return rest("/challenges", {
-          method: "POST",
-          body: {
-            creator_id: session.user_id,
-            seed: result.seed,
-            potential: result.potential,
-            creator_score: result.score,
-            creator_words: result.words
-          }
-        });
+  /* Submission is durable, not fire-and-forget. The earlier version sent
+     the PATCH/POST once and only logged a failure to the console — which
+     meant a single dropped request (a network blip, a session that expired
+     mid-round) silently erased a played challenge's result with no sign
+     anything went wrong: the round scored fine, but nothing was ever posted,
+     so the challenge sat there looking untouched forever. Now every result
+     is written to localStorage FIRST, and only cleared once the server
+     actually confirms it — so a failed attempt just waits and gets retried
+     the next time the Challenges panel opens, instead of vanishing. */
+  var PENDING_KEY = "wordhunt-pending-challenge-results";
+
+  function loadPending(){
+    try { return JSON.parse(prefGet(PENDING_KEY) || "[]"); } catch(e){ return []; }
+  }
+  function savePending(list){ prefSet(PENDING_KEY, JSON.stringify(list)); }
+
+  function postOne(result){
+    if(result.mode === "challenge-create"){
+      return rest("/challenges", {
+        method: "POST",
+        prefer: "return=minimal",
+        body: {
+          creator_id: session.user_id,
+          seed: result.seed,
+          potential: result.potential,
+          creator_score: result.score,
+          creator_words: result.words
+        }
+      });
+    }
+    return rest("/challenges?id=eq." + result.challengeId, {
+      method: "PATCH",
+      prefer: "return=minimal",
+      body: {
+        opponent_id: session.user_id,
+        opponent_score: result.score,
+        opponent_words: result.words,
+        status: "completed",
+        completed_at: new Date().toISOString()
       }
-      if(result.mode === "challenge-play"){
-        return rest("/challenges?id=eq." + result.challengeId, {
-          method: "PATCH",
-          prefer: "return=minimal",
-          body: {
-            opponent_id: session.user_id,
-            opponent_score: result.score,
-            opponent_words: result.words,
-            status: "completed",
-            completed_at: new Date().toISOString()
-          }
-        });
-      }
-    }).catch(function(err){
-      // The round already scored and shows normally either way — a failed
-      // submission means "this one didn't post," not "the round didn't count."
-      console.error("Challenge submission failed:", err);
     });
   }
+
+  // Attempts every queued result in order, stopping at the first failure —
+  // a network outage should leave later items queued too, not burn through
+  // all of them as failures in a tight loop.
+  //
+  // Guarded against running twice at once: submitResult() kicks off a flush
+  // immediately and fire-and-forget, but if the Challenges panel gets opened
+  // (which also flushes) while that's still in flight, a second unguarded
+  // flush would read the same still-pending item and post it a second time —
+  // harmless for a PATCH (RLS rejects the repeat once status flips), but a
+  // real bug for a POST, which would create two challenge rows for one round.
+  // Concurrent callers just await the one attempt already running instead.
+  var flushInFlight = null;
+
+  function newQueueId(){
+    return String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+  }
+
+  // Re-reads storage fresh on every iteration, and removes a confirmed
+  // success by its own id from a FRESH read rather than overwriting storage
+  // with whatever array this call started with. That distinction is what
+  // fixes a real bug caught by testing this: two submitResult() calls close
+  // together share one in-flight flush (see below), so the second item lands
+  // in storage while the first flush is already mid-loop — a version that
+  // captured its work list once at the start and saved that stale snapshot
+  // back on every step would silently erase the second item the moment the
+  // first one failed, since the failed item's "remaining" list never knew
+  // the second one existed.
+  function flushPending(){
+    if(flushInFlight) return flushInFlight;
+
+    flushInFlight = ensureSession().then(function(){
+      function next(){
+        var pending = loadPending();
+        if(!pending.length) return;
+        var item = pending[0];
+        return postOne(item).then(function(){
+          var current = loadPending();
+          savePending(current.filter(function(p){ return p._qid !== item._qid; }));
+          return next();
+        }).catch(function(err){
+          // Leave storage exactly as it is — the item's already there from
+          // when submitResult() queued it, nothing to overwrite.
+          console.error("Challenge submission still pending, will retry on next open:", err);
+        });
+      }
+      return next();
+    }).catch(function(err){
+      console.error("Couldn't reach the server to flush pending challenge results:", err);
+    }).then(function(){
+      flushInFlight = null;
+    });
+
+    return flushInFlight;
+  }
+
+  function submitResult(result){
+    result._qid = newQueueId();
+    var pending = loadPending();
+    pending.push(result);
+    savePending(pending);
+    return flushPending();   // try immediately; if it fails, openChallenges() retries later
+  }
+
+  // ---- detail / trace view ----
 
   // ---- detail / trace view ----
 
@@ -414,6 +494,12 @@
     var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
+    // #trail's CSS (position:absolute; inset:0) only targets that specific id
+    // from the live game board — this class gives this SVG the same overlay
+    // positioning instead of falling back to normal document flow, which is
+    // exactly why the trail was rendering as a disconnected squiggle below
+    // the grid rather than drawn across it.
+    svg.setAttribute("class", "static-trail-svg");
     var line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
     line.setAttribute("stroke-width", (tile * 0.14).toFixed(2));
     line.setAttribute("class", "static-trail-line");
